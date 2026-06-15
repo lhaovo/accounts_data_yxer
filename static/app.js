@@ -122,18 +122,18 @@ async function loadStatus() {
   state.status = data;
   $("statusText").textContent = data.dbExists
     ? `数据库：${data.dbPath}`
-    : `未找到数据库�?{data.dbPath}`;
+    : `未找到数据库：${data.dbPath}`;
   $("accountCount").textContent = data.accountCount ?? "-";
   $("metricCount").textContent = data.metricCount ?? "-";
   const minDate = data.dateRange?.minDate || "";
   const maxDate = data.dateRange?.maxDate || "";
-  $("dateRange").textContent = minDate && maxDate ? `${minDate} �?${maxDate}` : "-";
+  $("dateRange").textContent = minDate && maxDate ? `${minDate} 至 ${maxDate}` : "-";
 
   $("platformInput").innerHTML = '<option value="">全部平台</option>';
   for (const item of data.platforms || []) {
     const option = document.createElement("option");
     option.value = item.name;
-    option.textContent = `${item.name}�?{item.accountCount}）`;
+    option.textContent = `${item.name}（${item.accountCount}）`;
     $("platformInput").appendChild(option);
   }
 
@@ -198,14 +198,14 @@ function downloadCsv() {
 async function loadSettingsState() {
   const data = await getJson("/api/settings");
   $("settingsMessage").textContent = data.hasApiKey
-    ? "后端已保�?API Key。输入新值并保存可覆盖�?
-    : "后端尚未保存 API Key�?;
+    ? "后端已保存 API Key。输入新值并保存可覆盖。"
+    : "后端尚未保存 API Key。";
   return data;
 }
 
 async function openSettings() {
   $("settingsApiKeyInput").value = "";
-  $("settingsMessage").textContent = "正在读取设置状�?..";
+  $("settingsMessage").textContent = "正在读取设置状态...";
   $("settingsDialog").showModal();
   await loadSettingsState();
 }
@@ -213,7 +213,7 @@ async function openSettings() {
 async function saveSettings() {
   const value = $("settingsApiKeyInput").value.trim();
   if (!value) {
-    $("settingsMessage").textContent = "请输入新的蚁小二 API Key�?;
+    $("settingsMessage").textContent = "请输入新的蚁小二 API Key。";
     return;
   }
   await getJson("/api/settings", {
@@ -222,7 +222,7 @@ async function saveSettings() {
     body: JSON.stringify({ apiKey: value }),
   });
   $("settingsApiKeyInput").value = "";
-  $("settingsMessage").textContent = "已保存到后端�?;
+  $("settingsMessage").textContent = "已保存到后端。";
 }
 
 async function clearSettings() {
@@ -232,19 +232,19 @@ async function clearSettings() {
     body: JSON.stringify({ clear: true }),
   });
   $("settingsApiKeyInput").value = "";
-  $("settingsMessage").textContent = "后端保存�?API Key 已清除�?;
+  $("settingsMessage").textContent = "后端保存的 API Key 已清除。";
 }
 
 function openRefresh(mode) {
   state.pendingRefreshMode = mode;
-  $("refreshOutput").textContent = mode === "full" ? "准备全量刷新�? : "准备刷新最近一天�?;
+  $("refreshOutput").textContent = mode === "full" ? "准备全量刷新。" : "准备刷新最近一天。";
   $("refreshDialog").showModal();
 }
 
 async function runRefresh() {
   const settings = await getJson("/api/settings");
   if (!settings.hasApiKey) {
-    $("refreshOutput").textContent = "请先点击右上角设置按钮，填写并保存蚁小二 API Key�?;
+    $("refreshOutput").textContent = "请先点击右上角设置按钮，填写并保存蚂小二 API Key。";
     return;
   }
   $("refreshOutput").textContent = "正在刷新...";
@@ -258,10 +258,9 @@ async function runRefresh() {
     $("refreshOutput").textContent = JSON.stringify(data, null, 2);
     if (data.ok) await loadStatus();
   } catch (err) {
-    $("refreshOutput").textContent = "刷新请求失败�? + err.message;
+    $("refreshOutput").textContent = "刷新失败: " + err.message;
   }
 }
-
 function bindEvents() {
   $("singleMode").addEventListener("click", () => setMode("single"));
   $("rangeMode").addEventListener("click", () => setMode("range"));
