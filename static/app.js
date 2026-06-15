@@ -209,6 +209,7 @@ async function openSettings() {
   $("settingsDialog").showModal();
   await loadSettingsState();
   await loadScheduleState();
+  window._scheduleTimer = setInterval(loadScheduleState, 30000);
 }
 
 async function saveSettings() {
@@ -270,7 +271,7 @@ async function saveSchedule() {
 
 function openRefresh(mode) {
   state.pendingRefreshMode = mode;
-  $("refreshOutput").textContent = mode === "full" ? "准备全量刷新。" : "准备刷新最近一天。";
+  $("refreshOutput").textContent = mode === "full" ? "准备全量更新。" : "准备更新最近一天。";
   $("refreshDialog").showModal();
 }
 
@@ -280,7 +281,7 @@ async function runRefresh() {
     $("refreshOutput").textContent = "请先点击右上角设置按钮，填写并保存蚂小二 API Key。";
     return;
   }
-  $("refreshOutput").textContent = "正在刷新...";
+  $("refreshOutput").textContent = "正在更新...";
   try {
     const res = await fetch("/api/refresh", {
       method: "POST",
@@ -300,6 +301,9 @@ function bindEvents() {
   $("queryButton").addEventListener("click", () => queryRows().catch((err) => alert(err.message)));
   $("csvButton").addEventListener("click", downloadCsv);
   $("settingsButton").addEventListener("click", () => openSettings().catch((err) => ($("settingsMessage").textContent = String(err))));
+  $("settingsDialog").addEventListener("close", () => {
+    if (window._scheduleTimer) { clearInterval(window._scheduleTimer); window._scheduleTimer = null; }
+  });
   $("saveSettings").addEventListener("click", () => saveSettings().catch((err) => ($("settingsMessage").textContent = String(err))));
   $("clearSettings").addEventListener("click", () => clearSettings().catch((err) => ($("settingsMessage").textContent = String(err))));
   $("saveSchedule").addEventListener("click", () => saveSchedule().catch((err) => ($("scheduleMessage").textContent = String(err))));

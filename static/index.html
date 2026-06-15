@@ -16,8 +16,8 @@
         <button id="settingsButton" type="button" class="icon-button" title="设置" aria-label="设置">
           <span aria-hidden="true">⚙</span>
         </button>
-        <button id="refreshLatest" type="button">刷新最近一天</button>
-        <button id="refreshFull" type="button" class="secondary">全量刷新</button>
+        <button id="refreshLatest" type="button">更新最近一天</button>
+        <button id="refreshFull" type="button" class="secondary">全量更新</button>
       </div>
     </header>
 
@@ -123,11 +123,11 @@
     <dialog id="refreshDialog">
       <form method="dialog">
         <header>
-          <h2>刷新数据</h2>
+          <h2>更新数据</h2>
           <button value="close" type="submit" class="icon">×</button>
         </header>
         <div class="dialog-actions">
-          <button id="runRefresh" type="button">开始刷新</button>
+          <button id="runRefresh" type="button">开始更新</button>
         </div>
         <pre id="refreshOutput"></pre>
       </form>
@@ -159,7 +159,7 @@
           <h3>自动同步</h3>
           <label class="check">
             <input id="scheduleEnabled" type="checkbox" />
-            <span>启用定时刷新</span>
+            <span>启用定时更新</span>
           </label>
           <div class="schedule-row">
             <div class="field">
