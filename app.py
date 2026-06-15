@@ -102,7 +102,11 @@ def save_settings(settings: dict[str, Any]) -> None:
 
 
 def stored_api_key() -> str:
-    value = os.environ.get("YIXIAOER_API_KEY") or load_settings().get("apiKey") or ""
+    env_key = (os.environ.get("YIXIAOER_API_KEY") or "").strip()
+    # 忽略占位值，回落 settings.json
+    if env_key and env_key not in ("your_api_key_here", "your_api_key", "xxx", "changeme"):
+        return env_key
+    value = load_settings().get("apiKey") or ""
     return str(value).strip()
 
 
