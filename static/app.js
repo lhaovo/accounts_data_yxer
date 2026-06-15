@@ -208,6 +208,7 @@ async function openSettings() {
   $("settingsMessage").textContent = "正在读取设置状态...";
   $("settingsDialog").showModal();
   await loadSettingsState();
+  await loadScheduleState();
 }
 
 async function saveSettings() {
@@ -233,6 +234,38 @@ async function clearSettings() {
   });
   $("settingsApiKeyInput").value = "";
   $("settingsMessage").textContent = "后端保存的 API Key 已清除。";
+}
+
+async function loadScheduleState() {
+  const data = await getJson("/api/schedule");
+  $("scheduleEnabled").checked = data.enabled || false;
+  $("scheduleInterval").value = data.intervalMinutes || 360;
+  $("scheduleMode").value = data.mode || "latest";
+  let msg = data.enabled
+    ? "已启用，间隔 " + (data.intervalMinutes / 60) + " 小时"
+    : "未启用";
+  if (data.nextRun) {
+    const d = new Date(data.nextRun * 1000);
+    msg += "，下次执行: " + d.toLocaleString("zh-CN");
+  }
+  if (data.lastRun) {
+    msg += "，上次: " + data.lastRun;
+  }
+  $("scheduleMessage").textContent = msg;
+}
+
+async function saveSchedule() {
+  const body = {
+    enabled: $("scheduleEnabled").checked,
+    intervalMinutes: parseInt($("scheduleInterval").value, 10),
+    mode: $("scheduleMode").value,
+  };
+  await getJson("/api/schedule", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  await loadScheduleState();
 }
 
 function openRefresh(mode) {
@@ -269,6 +302,7 @@ function bindEvents() {
   $("settingsButton").addEventListener("click", () => openSettings().catch((err) => ($("settingsMessage").textContent = String(err))));
   $("saveSettings").addEventListener("click", () => saveSettings().catch((err) => ($("settingsMessage").textContent = String(err))));
   $("clearSettings").addEventListener("click", () => clearSettings().catch((err) => ($("settingsMessage").textContent = String(err))));
+  $("saveSchedule").addEventListener("click", () => saveSchedule().catch((err) => ($("scheduleMessage").textContent = String(err))));
   $("refreshLatest").addEventListener("click", () => openRefresh("latest"));
   $("refreshFull").addEventListener("click", () => openRefresh("full"));
   $("runRefresh").addEventListener("click", () => runRefresh().catch((err) => ($("refreshOutput").textContent = String(err))));

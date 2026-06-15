@@ -1,12 +1,23 @@
+﻿/* === Design: Data-Dense Dashboard === */
+/* Colors: Blue primary + Amber CTA + Slate bg */
+/* Typography: Fira Sans */
+
+@import url("https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;500;600;650;700&display=swap");
+
 :root {
-  --bg: #f5f7f8;
+  --bg: #f8fafc;
   --panel: #ffffff;
-  --ink: #172026;
-  --muted: #64727d;
-  --line: #d9e0e5;
-  --accent: #0f766e;
-  --accent-dark: #115e59;
+  --ink: #1e293b;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --accent: #1e40af;
+  --accent-dark: #1e3a8a;
+  --accent-light: #dbeafe;
+  --cta: #f59e0b;
+  --cta-hover: #d97706;
   --warn: #b45309;
+  --success: #059669;
+  --hover-row: #f1f5f9;
 }
 
 * {
@@ -18,7 +29,8 @@ body {
   min-height: 100vh;
   background: var(--bg);
   color: var(--ink);
-  font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+  font-family: "Fira Sans", "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 button,
@@ -35,19 +47,28 @@ button {
   padding: 0 14px;
   border-radius: 6px;
   cursor: pointer;
+  font-weight: 500;
+  transition: background 0.2s, box-shadow 0.2s;
 }
 
 button:hover {
   background: var(--accent-dark);
+  box-shadow: 0 1px 3px rgba(30, 64, 175, 0.2);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 button.secondary {
   background: #fff;
   color: var(--accent-dark);
+  border-color: var(--line);
 }
 
 button.secondary:hover {
-  background: #e8f3f1;
+  background: var(--accent-light);
 }
 
 button.icon {
@@ -66,10 +87,16 @@ button.icon-button {
   background: #fff;
   color: var(--ink);
   font-size: 18px;
+  transition: background 0.2s;
 }
 
 button.icon-button:hover {
   background: #eef3f4;
+}
+
+button.icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .topbar {
@@ -77,20 +104,23 @@ button.icon-button:hover {
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  padding: 22px 28px;
+  padding: 18px 28px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
 
 h1,
 h2,
+h3,
 p {
   margin: 0;
 }
 
 h1 {
-  font-size: 22px;
+  font-size: 21px;
   font-weight: 650;
+  color: var(--accent-dark);
+  letter-spacing: -0.01em;
 }
 
 .topbar p {
@@ -107,6 +137,15 @@ h1 {
   gap: 8px;
   flex-wrap: wrap;
 }
+.dialog-actions {
+  margin-top: 12px;
+  margin-bottom: 6px;
+}
+.settings-section .dialog-actions {
+  margin-top: 14px;
+  margin-bottom: 8px;
+}
+
 
 main {
   padding: 20px 28px 32px;
@@ -138,6 +177,7 @@ main {
 .label {
   color: var(--muted);
   font-size: 12px;
+  font-weight: 500;
 }
 
 input,
@@ -149,6 +189,14 @@ select {
   color: var(--ink);
   padding: 0 10px;
   min-width: 0;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+input:focus-visible,
+select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(30, 64, 175, 0.1);
 }
 
 .segmented {
@@ -179,11 +227,13 @@ select {
   height: 36px;
   color: var(--muted);
   font-size: 13px;
+  cursor: pointer;
 }
 
 .check input {
   width: 16px;
   height: 16px;
+  accent-color: var(--accent);
 }
 
 .hidden {
@@ -207,6 +257,9 @@ select {
   display: block;
   margin-top: 5px;
   font-size: 18px;
+  font-weight: 650;
+  color: var(--accent-dark);
+  font-variant-numeric: tabular-nums;
 }
 
 .table-wrap {
@@ -236,47 +289,70 @@ td {
 th {
   position: sticky;
   top: 0;
-  z-index: 1;
-  background: #eef3f4;
-  color: #40505a;
+  z-index: 2;
+  background: #f1f5f9;
+  color: #334155;
   font-weight: 650;
 }
 
 th.sortable {
   cursor: pointer;
   user-select: none;
+  transition: background 0.15s;
+}
+
+th.sortable:hover {
+  background: #e2e8f0;
 }
 
 th.sortable::after {
-  content: "↕";
+  content: "\2195";
   display: inline-block;
   margin-left: 6px;
-  color: #7c8b94;
+  color: #94a3b8;
   font-size: 11px;
 }
 
+th.sortable.active {
+  background: #dbeafe;
+}
+
 th.sortable.active::after {
-  color: var(--accent-dark);
-  content: "↑";
+  color: var(--accent);
+  content: "\2191";
 }
 
 th.sortable.active[data-dir="desc"]::after {
-  content: "↓";
+  content: "\2193";
+}
+
+tbody tr {
+  transition: background 0.15s;
+}
+
+tbody tr:hover {
+  background: var(--hover-row);
 }
 
 th.numeric,
 td.numeric,
 tfoot td:nth-child(n + 5):nth-child(-n + 12) {
   text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+tfoot tr {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
 }
 
 tfoot td {
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
-  background: #f7faf9;
-  border-top: 1px solid var(--line);
+  background: #f1f5f9;
+  border-top: 2px solid var(--line);
+  border-bottom: 2px solid var(--line);
   font-weight: 650;
+  color: var(--accent-dark);
 }
 
 td.empty {
@@ -309,6 +385,21 @@ dialog header {
 
 dialog h2 {
   font-size: 18px;
+  font-weight: 650;
+  color: var(--accent-dark);
+}
+
+dialog hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 14px 0 10px;
+}
+
+dialog h3 {
+  font-size: 14px;
+  font-weight: 650;
+  margin-bottom: 10px;
+  color: var(--ink);
 }
 
 pre {
@@ -321,6 +412,7 @@ pre {
   border-radius: 6px;
   font-size: 12px;
   line-height: 1.45;
+  font-family: "Fira Code", "Cascadia Code", "Consolas", monospace;
 }
 
 .dialog-message {
@@ -332,6 +424,39 @@ pre {
 
 .wide {
   width: 100%;
+}
+
+.settings-section {
+  margin-bottom: 4px;
+}
+
+.settings-section h3 {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ink);
+  margin-bottom: 10px;
+}
+
+.schedule-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin: 10px 0 14px;
+}
+
+.schedule-row .field label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 @media (max-width: 980px) {

@@ -21,11 +21,13 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import traceback
 from datetime import datetime
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
+from time import time as time_now
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -362,6 +364,145 @@ def status_payload() -> dict[str, Any]:
     return payload
 
 
+# ---------------------------------------------------------------------------
+# Auto-refresh scheduler
+# ---------------------------------------------------------------------------
+
+SCHEDULER_LOCK = threading.RLock()
+
+class Scheduler:
+    def __init__(self) -> None:
+        self._timer: threading.Timer | None = None
+        self._enabled = False
+        self._interval_minutes = 360
+        self._mode = "latest"
+        self._next_run: float | None = None
+        self._last_run: str | None = None
+        self._last_result: dict[str, Any] | None = None
+        self._load_config()
+        if self._enabled:
+            self._start()
+
+    def _load_config(self) -> None:
+        cfg = load_settings().get("schedule", {})
+        if isinstance(cfg, dict):
+            self._enabled = bool(cfg.get("enabled"))
+            self._interval_minutes = max(5, int(cfg.get("intervalMinutes") or 360))
+            self._mode = cfg.get("mode") if cfg.get("mode") in ("latest", "full") else "latest"
+            self._last_run = cfg.get("lastRun")
+            self._next_run = cfg.get("nextRun")
+
+    def _save_config(self) -> None:
+        with SCHEDULER_LOCK:
+            settings = load_settings()
+            settings["schedule"] = {
+                "enabled": self._enabled,
+                "intervalMinutes": self._interval_minutes,
+                "mode": self._mode,
+                "lastRun": self._last_run,
+                "nextRun": self._next_run,
+            }
+            save_settings(settings)
+
+    def _start(self) -> None:
+        if self._timer:
+            self._timer.cancel()
+        delay = self._next_run - time_now() if self._next_run else 0
+        if delay <= 0:
+            delay = self._interval_minutes * 60
+            self._next_run = time_now() + delay
+        self._timer = threading.Timer(delay, self._run)
+        self._timer.daemon = True
+        self._timer.start()
+        self._save_config()
+
+    def _stop(self) -> None:
+        if self._timer:
+            self._timer.cancel()
+            self._timer = None
+        self._next_run = None
+
+    def _run(self) -> None:
+        with SCHEDULER_LOCK:
+            if not self._enabled:
+                return
+        try:
+            result = _execute_refresh(self._mode)
+            self._last_run = datetime.now(CN_TZ).isoformat(timespec="seconds")
+            self._last_result = result
+        except Exception as exc:
+            self._last_run = datetime.now(CN_TZ).isoformat(timespec="seconds")
+            self._last_result = {"ok": False, "error": str(exc)}
+        with SCHEDULER_LOCK:
+            if self._enabled:
+                delay = self._interval_minutes * 60
+                self._next_run = time_now() + delay
+                self._timer = threading.Timer(delay, self._run)
+                self._timer.daemon = True
+                self._timer.start()
+            else:
+                self._timer = None
+                self._next_run = None
+        self._save_config()
+
+    def update(self, enabled: bool, interval_minutes: int, mode: str) -> None:
+        with SCHEDULER_LOCK:
+            self._enabled = enabled
+            self._interval_minutes = max(5, interval_minutes)
+            self._mode = mode if mode in ("latest", "full") else "latest"
+            self._stop()
+            if self._enabled:
+                self._start()
+            self._save_config()
+
+    def status(self) -> dict[str, Any]:
+        with SCHEDULER_LOCK:
+            return {
+                "enabled": self._enabled,
+                "intervalMinutes": self._interval_minutes,
+                "mode": self._mode,
+                "nextRun": self._next_run,
+                "lastRun": self._last_run,
+                "lastResult": self._last_result,
+            }
+
+
+_scheduler: Scheduler | None = None
+
+
+def get_scheduler() -> Scheduler:
+    global _scheduler
+    if _scheduler is None:
+        _scheduler = Scheduler()
+    return _scheduler
+
+
+def _execute_refresh(mode: str) -> dict[str, Any]:
+    api_key = stored_api_key()
+    if not api_key:
+        return {"ok": False, "error": "missing apiKey"}
+    script_name = "collect_daily_accounts.py" if mode == "full" else "collect_latest_day.py"
+    script = scripts_dir() / script_name
+    if not script.exists():
+        return {"ok": False, "error": f"script not found: {script}"}
+    env = dict(os.environ)
+    env["YIXIAOER_API_KEY"] = api_key
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.setdefault("PYTHONUTF8", "1")
+    cmd = [sys.executable, str(script), "--db", str(resolve_db_path())]
+    proc = subprocess.run(cmd, cwd=str(scripts_dir()), env=env, capture_output=True, text=True, encoding="utf-8", timeout=600)
+    return {
+        "ok": proc.returncode == 0,
+        "returnCode": proc.returncode,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr.replace(api_key, "***") if api_key else proc.stderr,
+    }
+
+
+def schedule_payload() -> dict[str, Any]:
+    return get_scheduler().status()
+
+
 class AppHandler(BaseHTTPRequestHandler):
     server_version = "YiXiaoErAccountService/1.0"
 
@@ -398,6 +539,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 self.serve_static(parsed.path.removeprefix("/static/"))
             elif parsed.path == "/api/status":
                 self.send_json(status_payload())
+            elif parsed.path == "/api/schedule":
+                self.handle_schedule()
             elif parsed.path == "/api/settings":
                 self.send_json(settings_payload())
             elif parsed.path == "/api/metrics":
@@ -414,6 +557,8 @@ class AppHandler(BaseHTTPRequestHandler):
             parsed = urlparse(self.path)
             if parsed.path == "/api/refresh":
                 self.handle_refresh()
+            elif parsed.path == "/api/schedule":
+                self.handle_schedule()
             elif parsed.path == "/api/settings":
                 self.handle_settings()
             else:
@@ -496,6 +641,19 @@ class AppHandler(BaseHTTPRequestHandler):
         save_settings(settings)
         self.send_json(settings_payload())
 
+
+    def handle_schedule(self) -> None:
+        if self.command == "GET":
+            self.send_json(schedule_payload())
+            return
+        body = self.read_json_body()
+        enabled = bool(body.get("enabled"))
+        interval = int(body.get("intervalMinutes") or 360)
+        mode = str(body.get("mode") or "latest")
+        get_scheduler().update(enabled, interval, mode)
+        self.send_json(schedule_payload())
+
+
     def handle_refresh(self) -> None:
         body = self.read_json_body()
         mode = body.get("mode") or "latest"
@@ -534,6 +692,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
+    sch = get_scheduler()
+    print(f"Auto-refresh scheduler: enabled={sch.status()['enabled']}, "
+          f"interval={sch.status()['intervalMinutes']}min, mode={sch.status()['mode']}", file=sys.stderr)
     server = ThreadingHTTPServer((args.host, args.port), AppHandler)
     print(f"YiXiaoEr account service listening on http://{args.host}:{args.port}", file=sys.stderr)
     print(f"Database: {resolve_db_path()}", file=sys.stderr)

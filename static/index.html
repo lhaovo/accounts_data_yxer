@@ -10,7 +10,7 @@
     <header class="topbar">
       <div>
         <h1>社媒账号数据汇总</h1>
-        <p id="statusText">正在读取数据库状态...</p>
+        <p id="statusText" aria-live="polite">正在读取数据库状态...</p>
       </div>
       <div class="actions">
         <button id="settingsButton" type="button" class="icon-button" title="设置" aria-label="设置">
@@ -139,15 +139,53 @@
           <h2>设置</h2>
           <button value="close" type="submit" class="icon">×</button>
         </header>
-        <label class="field wide">
-          <span>蚁小二 API Key</span>
-          <input id="settingsApiKeyInput" type="password" autocomplete="off" placeholder="输入新 API Key；已保存的 Key 不会回显" />
-        </label>
-        <div class="dialog-actions">
-          <button id="saveSettings" type="button">保存</button>
-          <button id="clearSettings" type="button" class="secondary">清除</button>
+
+        <div class="settings-section">
+          <h3>API Key</h3>
+          <div class="field wide">
+            <span>蚁小二 API Key</span>
+            <input id="settingsApiKeyInput" type="password" autocomplete="off" placeholder="输入新 API Key；已保存的 Key 不会回显" />
+          </div>
+          <div class="dialog-actions">
+            <button id="saveSettings" type="button">保存</button>
+            <button id="clearSettings" type="button" class="secondary">清除</button>
+          </div>
+          <p id="settingsMessage" class="dialog-message"></p>
         </div>
-        <p id="settingsMessage" class="dialog-message"></p>
+
+        <hr />
+
+        <div class="settings-section">
+          <h3>自动同步</h3>
+          <label class="check">
+            <input id="scheduleEnabled" type="checkbox" />
+            <span>启用定时刷新</span>
+          </label>
+          <div class="schedule-row">
+            <div class="field">
+              <label for="scheduleInterval">间隔</label>
+              <select id="scheduleInterval">
+                <option value="60">1 小时</option>
+                <option value="120">2 小时</option>
+                <option value="240">4 小时</option>
+                <option value="360" selected>6 小时</option>
+                <option value="720">12 小时</option>
+                <option value="1440">24 小时</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="scheduleMode">模式</label>
+              <select id="scheduleMode">
+                <option value="latest" selected>最近一天</option>
+                <option value="full">全量</option>
+              </select>
+            </div>
+          </div>
+          <div class="dialog-actions">
+            <button id="saveSchedule" type="button">保存同步设置</button>
+          </div>
+          <p id="scheduleMessage" class="dialog-message"></p>
+        </div>
       </form>
     </dialog>
 
