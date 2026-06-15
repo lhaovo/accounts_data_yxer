@@ -1,0 +1,15 @@
+services:
+  yixiaoer-account:
+    build: .
+    container_name: yixiaoer-account
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config
+    env_file:
+      - .env
+    environment:
+      - YIXIAOER_DB_PATH=/app/data/yixiaoer_daily_accounts.sqlite
+      - YIXIAOER_SCRIPTS_DIR=/app/scripts
+    restart: unless-stopped

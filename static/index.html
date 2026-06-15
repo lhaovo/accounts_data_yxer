@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>社媒账号数据汇总</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>社媒账号数据汇总</h1>
+        <p id="statusText">正在读取数据库状态...</p>
+      </div>
+      <div class="actions">
+        <button id="settingsButton" type="button" class="icon-button" title="设置" aria-label="设置">
+          <span aria-hidden="true">⚙</span>
+        </button>
+        <button id="refreshLatest" type="button">刷新最近一天</button>
+        <button id="refreshFull" type="button" class="secondary">全量刷新</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="toolbar">
+        <div class="field mode">
+          <label>查询方式</label>
+          <div class="segmented">
+            <button id="singleMode" type="button" class="active">单日</button>
+            <button id="rangeMode" type="button">范围</button>
+          </div>
+        </div>
+        <div class="field single-date">
+          <label for="dateInput">日期</label>
+          <input id="dateInput" type="date" />
+        </div>
+        <div class="field range-date hidden">
+          <label for="startInput">开始</label>
+          <input id="startInput" type="date" />
+        </div>
+        <div class="field range-date hidden">
+          <label for="endInput">结束</label>
+          <input id="endInput" type="date" />
+        </div>
+        <div class="field">
+          <label for="platformInput">平台</label>
+          <select id="platformInput">
+            <option value="">全部平台</option>
+          </select>
+        </div>
+        <label class="check">
+          <input id="includeEmptyInput" type="checkbox" />
+          <span>包含未更新账号</span>
+        </label>
+        <div class="button-row">
+          <button id="queryButton" type="button">查询</button>
+          <button id="csvButton" type="button" class="secondary">下载 CSV</button>
+        </div>
+      </section>
+
+      <section class="summary">
+        <div>
+          <span class="label">账号数</span>
+          <strong id="accountCount">-</strong>
+        </div>
+        <div>
+          <span class="label">指标记录</span>
+          <strong id="metricCount">-</strong>
+        </div>
+        <div>
+          <span class="label">日期范围</span>
+          <strong id="dateRange">-</strong>
+        </div>
+        <div>
+          <span class="label">当前结果</span>
+          <strong id="rowCount">-</strong>
+        </div>
+      </section>
+
+      <section class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="sortable" data-sort="metric_date">日期</th>
+              <th class="sortable" data-sort="platform_name">平台</th>
+              <th class="sortable" data-sort="platform_account_name">账号昵称</th>
+              <th class="sortable" data-sort="platform_account_id">账号ID</th>
+              <th class="sortable numeric" data-sort="fans">粉丝</th>
+              <th class="sortable numeric" data-sort="play">播放</th>
+              <th class="sortable numeric" data-sort="exposure">曝光</th>
+              <th class="sortable numeric" data-sort="like">点赞</th>
+              <th class="sortable numeric" data-sort="comment">评论</th>
+              <th class="sortable numeric" data-sort="share">分享</th>
+              <th class="sortable numeric" data-sort="collect">收藏</th>
+              <th class="sortable numeric" data-sort="publish_count">发布数</th>
+              <th class="sortable" data-sort="login_status">登录状态</th>
+            </tr>
+          </thead>
+          <tbody id="rowsBody">
+            <tr><td colspan="13" class="empty">暂无数据</td></tr>
+          </tbody>
+          <tfoot>
+            <tr id="totalRow">
+              <td>总计</td>
+              <td>-</td>
+              <td id="totalCount">0 行</td>
+              <td>-</td>
+              <td id="totalFans">-</td>
+              <td id="totalPlay">-</td>
+              <td id="totalExposure">-</td>
+              <td id="totalLike">-</td>
+              <td id="totalComment">-</td>
+              <td id="totalShare">-</td>
+              <td id="totalCollect">-</td>
+              <td id="totalPublish">-</td>
+              <td>-</td>
+            </tr>
+          </tfoot>
+        </table>
+      </section>
+    </main>
+
+    <dialog id="refreshDialog">
+      <form method="dialog">
+        <header>
+          <h2>刷新数据</h2>
+          <button value="close" type="submit" class="icon">×</button>
+        </header>
+        <div class="dialog-actions">
+          <button id="runRefresh" type="button">开始刷新</button>
+        </div>
+        <pre id="refreshOutput"></pre>
+      </form>
+    </dialog>
+
+    <dialog id="settingsDialog">
+      <form method="dialog">
+        <header>
+          <h2>设置</h2>
+          <button value="close" type="submit" class="icon">×</button>
+        </header>
+        <label class="field wide">
+          <span>蚁小二 API Key</span>
+          <input id="settingsApiKeyInput" type="password" autocomplete="off" placeholder="输入新 API Key；已保存的 Key 不会回显" />
+        </label>
+        <div class="dialog-actions">
+          <button id="saveSettings" type="button">保存</button>
+          <button id="clearSettings" type="button" class="secondary">清除</button>
+        </div>
+        <p id="settingsMessage" class="dialog-message"></p>
+      </form>
+    </dialog>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
