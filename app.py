@@ -48,6 +48,7 @@ REPORT_COLUMNS = [
     "login_status",
     "fans",
     "play",
+    "read",
     "exposure",
     "like",
     "comment",
@@ -62,6 +63,7 @@ STANDARD_KEYS = [
     "net_fans",
     "new_fans",
     "play",
+    "read",
     "exposure",
     "like",
     "favorite_like",
@@ -169,17 +171,19 @@ def query_metric_rows(
     conn: sqlite3.Connection,
     start: str,
     end: str,
-    platform: str | None,
-    account_id: str | None,
+    platforms: list[str] | None,
+    account_ids: list[str] | None,
 ) -> list[sqlite3.Row]:
     params: list[Any] = [start, end]
     filters = ["m.metric_date BETWEEN ? AND ?"]
-    if platform:
-        filters.append("m.platform_name = ?")
-        params.append(platform)
-    if account_id:
-        filters.append("m.platform_account_id = ?")
-        params.append(account_id)
+    if platforms:
+        placeholders_p = ",".join("?" for _ in platforms)
+        filters.append(f"m.platform_name IN ({placeholders_p})")
+        params.extend(platforms)
+    if account_ids:
+        placeholders_ids = ",".join("?" for _ in account_ids)
+        filters.append(f"m.platform_account_id IN ({placeholders_ids})")
+        params.extend(account_ids)
     placeholders = ",".join("?" for _ in STANDARD_KEYS)
     params.extend(STANDARD_KEYS)
     where = " AND ".join(filters)
@@ -212,28 +216,29 @@ def query_metric_rows(
         params,
     ).fetchall()
 
-
 def empty_rows(
     conn: sqlite3.Connection,
     start: str,
     end: str,
-    platform: str | None,
-    account_id: str | None,
+    platforms: list[str] | None,
+    account_ids: list[str] | None,
 ) -> list[dict[str, Any]]:
     params: list[Any] = []
     filters = ["1 = 1"]
-    if platform:
-        filters.append("platform_name = ?")
-        params.append(platform)
-    if account_id:
-        filters.append("platform_account_id = ?")
-        params.append(account_id)
+    if platforms:
+        placeholders_p = ",".join("?" for _ in platforms)
+        filters.append(f"platform_name IN ({placeholders_p})")
+        params.extend(platforms)
+    if account_ids:
+        placeholders_ids = ",".join("?" for _ in account_ids)
+        filters.append(f"platform_account_id IN ({placeholders_ids})")
+        params.extend(account_ids)
     accounts = conn.execute(
         f"""
         SELECT platform_name, platform_account_name, platform_account_id, status AS login_status
         FROM accounts
         WHERE {" AND ".join(filters)}
-        ORDER BY platform_name, platform_account_name, platform_account_id
+        ORDER BY platform_account_name, platform_account_id
         """,
         params,
     ).fetchall()
@@ -270,7 +275,6 @@ def empty_rows(
             )
     return result
 
-
 def summarize(rows: list[sqlite3.Row], base: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     result: dict[tuple[str, str], dict[str, Any]] = {}
     for item in base or []:
@@ -303,6 +307,8 @@ def summarize(rows: list[sqlite3.Row], base: list[dict[str, Any]] | None = None)
             item["fans"] = apply_value(item["fans"], value, aggregation)
         elif standard_key == "play":
             item["play"] = apply_value(item["play"], value, aggregation)
+        elif standard_key == "read":
+            item["play"] = apply_value(item["play"], value, aggregation)
         elif standard_key == "exposure":
             item["exposure"] = apply_value(item["exposure"], value, aggregation)
         elif standard_key in ("like", "favorite_like"):
@@ -325,6 +331,42 @@ def summarize(rows: list[sqlite3.Row], base: list[dict[str, Any]] | None = None)
             x["platform_account_id"] or "",
         ),
     )
+
+def _merge_accounts(rows):
+    merged = {}
+    for row in rows:
+        pid = row["platform_account_id"]
+        if pid not in merged:
+            merged[pid] = {
+                "metric_date": row["metric_date"],
+                "platform_name": row["platform_name"],
+                "platform_account_name": row["platform_account_name"],
+                "platform_account_id": pid,
+                "login_status": row["login_status"],
+                "fans": 0.0,
+                "play": 0.0,
+                "exposure": 0.0,
+                "like": 0.0,
+                "comment": 0.0,
+                "share": 0.0,
+                "collect": 0.0,
+                "publish_count": 0.0,
+                "_has_data": False,
+            }
+        m = merged[pid]
+        for key in ("fans", "play", "exposure", "like", "comment", "share", "collect", "publish_count"):
+            val = row.get(key)
+            if val is not None:
+                m[key] = float(m[key]) + float(val)
+                m["_has_data"] = True
+        if row.get("login_status") and row["login_status"] != "-":
+            m["login_status"] = row["login_status"]
+    for m in merged.values():
+        if not m["_has_data"]:
+            for key in ("fans", "play", "exposure", "like", "comment", "share", "collect", "publish_count"):
+                m[key] = None
+        m.pop("_has_data", None)
+    return sorted(merged.values(), key=lambda x: (x["platform_name"] or "", x["platform_account_name"] or ""))
 
 
 def display_rows(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -360,6 +402,15 @@ def status_payload() -> dict[str, Any]:
             )
         ]
         payload["accountCount"] = conn.execute("SELECT count(*) FROM accounts").fetchone()[0]
+        payload["accounts"] = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT platform_account_id, platform_name, platform_account_name
+                FROM accounts ORDER BY platform_account_name
+                """
+            )
+        ]
         payload["metricCount"] = conn.execute("SELECT count(*) FROM daily_account_metrics").fetchone()[0]
     return payload
 
@@ -596,15 +647,20 @@ class AppHandler(BaseHTTPRequestHandler):
             end = parse_date(end_value)
         if start > end:
             raise ValueError("start must be <= end")
-        platform = (params.get("platform") or [""])[0].strip() or None
-        account_id = (params.get("accountId") or [""])[0].strip() or None
+        platform_raw = (params.get("platforms") or [""])[0].strip()
+        platforms = [p.strip() for p in platform_raw.split(",") if p.strip()] if platform_raw else None
+        account_id_raw = (params.get("accountIds") or [""])[0].strip()
+        account_ids = [a.strip() for a in account_id_raw.split(",") if a.strip()] if account_id_raw else None
         include_empty = (params.get("includeEmpty") or ["0"])[0] in ("1", "true", "yes")
         with connect_db() as conn:
-            base = empty_rows(conn, start, end, platform, account_id) if include_empty else None
-            return summarize(query_metric_rows(conn, start, end, platform, account_id), base)
+            base = empty_rows(conn, start, end, platforms, account_ids) if include_empty else None
+            return summarize(query_metric_rows(conn, start, end, platforms, account_ids), base)
 
     def handle_metrics(self, query: str) -> None:
         rows = self.query_rows_from_params(query)
+        params = parse_qs(query)
+        if (params.get("merge") or ["0"])[0] in ("1", "true", "yes"):
+            rows = _merge_accounts(rows)
         self.send_json({"rows": display_rows(rows), "rawRows": rows, "count": len(rows), "columns": REPORT_COLUMNS})
 
     def handle_csv(self, query: str) -> None:

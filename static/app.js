@@ -34,9 +34,12 @@ function buildQuery() {
     params.set("start", $("startInput").value);
     params.set("end", $("endInput").value);
   }
-  const platform = $("platformInput").value;
-  if (platform) params.set("platform", platform);
+  const checkedPlatforms = [...document.querySelectorAll("#platformList input[type=\"checkbox\"]:checked")].map(cb => cb.value);
+  if (checkedPlatforms.length) params.set("platforms", checkedPlatforms.join(","));
   if ($("includeEmptyInput").checked) params.set("includeEmpty", "1");
+  if (state.mode === "range" && $("mergeInput").checked) params.set("merge", "1");
+  const checkedAccounts = [...document.querySelectorAll("#accountList input[type=\"checkbox\"]:checked")].map(cb => cb.value);
+  if (checkedAccounts.length) params.set("accountIds", checkedAccounts.join(","));
   return params;
 }
 
@@ -55,6 +58,7 @@ function setMode(mode) {
   $("rangeMode").classList.toggle("active", mode === "range");
   document.querySelectorAll(".single-date").forEach((el) => el.classList.toggle("hidden", mode !== "single"));
   document.querySelectorAll(".range-date").forEach((el) => el.classList.toggle("hidden", mode !== "range"));
+  document.querySelectorAll(".merge-only").forEach((el) => el.classList.toggle("hidden", mode !== "range"));
 }
 
 function parseNumber(value) {
@@ -129,18 +133,27 @@ async function loadStatus() {
   const maxDate = data.dateRange?.maxDate || "";
   $("dateRange").textContent = minDate && maxDate ? `${minDate} 至 ${maxDate}` : "-";
 
-  $("platformInput").innerHTML = '<option value="">全部平台</option>';
+  // Populate platform filter
+  const platformList = $("platformList");
+  platformList.innerHTML = "";
   for (const item of data.platforms || []) {
-    const option = document.createElement("option");
-    option.value = item.name;
-    option.textContent = `${item.name}（${item.accountCount}）`;
-    $("platformInput").appendChild(option);
+    const label = document.createElement("label");
+    label.innerHTML = '<input type="checkbox" value="' + item.name + '" /> ' + item.name + ' <span style="color:var(--muted);font-size:11px">' + item.accountCount + '</span>';
+    platformList.appendChild(label);
   }
 
   const defaultDate = maxDate || new Date().toISOString().slice(0, 10);
   $("dateInput").value = todayLike(defaultDate);
   $("startInput").value = todayLike(minDate || defaultDate);
   $("endInput").value = todayLike(defaultDate);
+  // Populate account filter
+  const accountList = $("accountList");
+  accountList.innerHTML = "";
+  for (const acc of data.accounts || []) {
+    const label = document.createElement("label");
+    label.innerHTML = '<input type="checkbox" value="' + acc.platform_account_id + '" /> ' + acc.platform_account_name + ' <span style="color:var(--muted);font-size:11px">' + acc.platform_name + '</span>';
+    accountList.appendChild(label);
+  }
 }
 
 function renderRows(rows) {
@@ -312,6 +325,44 @@ function bindEvents() {
   $("runRefresh").addEventListener("click", () => runRefresh().catch((err) => ($("refreshOutput").textContent = String(err))));
   $("refreshDialog").addEventListener("close", () => {
     if ($("refreshOutput").textContent.startsWith("准备")) return;
+  });
+  // Platform filter toggle
+  $("platformFilterBtn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    $("platformDropdown").classList.toggle("hidden");
+  });
+  $("selectAllPlatforms").addEventListener("click", () => {
+    document.querySelectorAll("#platformList input[type=\"checkbox\"]").forEach(cb => { cb.checked = true; cb.dispatchEvent(new Event("change", {bubbles: true})); });
+  });
+  $("clearAllPlatforms").addEventListener("click", () => {
+    document.querySelectorAll("#platformList input[type=\"checkbox\"]").forEach(cb => { cb.checked = false; cb.dispatchEvent(new Event("change", {bubbles: true})); });
+  });
+  $("platformList").addEventListener("change", () => {
+    const checked = [...document.querySelectorAll("#platformList input[type=\"checkbox\"]:checked")];
+    const btn = $("platformFilterBtn").querySelector("span");
+    btn.textContent = checked.length ? "已选 " + checked.length + " 个" : "全部平台";
+  });
+
+  // Account filter toggle
+  $("accountFilterBtn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    $("accountDropdown").classList.toggle("hidden");
+  });
+  document.addEventListener("click", (e) => {
+    if (!$("platformFilter").contains(e.target)) $("platformDropdown").classList.add("hidden");
+    if (!$("accountFilter").contains(e.target)) $("accountDropdown").classList.add("hidden");
+  });
+  $("selectAllAccounts").addEventListener("click", () => {
+    document.querySelectorAll("#accountList input[type=\"checkbox\"]").forEach(cb => { cb.checked = true; cb.dispatchEvent(new Event("change", {bubbles: true})); });
+  });
+  $("clearAllAccounts").addEventListener("click", () => {
+    document.querySelectorAll("#accountList input[type=\"checkbox\"]").forEach(cb => { cb.checked = false; cb.dispatchEvent(new Event("change", {bubbles: true})); });
+  });
+  // Update trigger text on checkbox change
+  $("accountList").addEventListener("change", () => {
+    const checked = [...document.querySelectorAll("#accountList input[type=\"checkbox\"]:checked")];
+    const btn = $("accountFilterBtn").querySelector("span");
+    btn.textContent = checked.length ? "已选 " + checked.length + " 个" : "全部账号";
   });
   $("refreshOutput").addEventListener("dblclick", () => runRefresh().catch((err) => ($("refreshOutput").textContent = String(err))));
   document.querySelectorAll("th.sortable").forEach((th) => {

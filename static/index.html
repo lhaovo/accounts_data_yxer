@@ -42,12 +42,42 @@
           <label for="endInput">结束</label>
           <input id="endInput" type="date" />
         </div>
-        <div class="field">
-          <label for="platformInput">平台</label>
-          <select id="platformInput">
-            <option value="">全部平台</option>
-          </select>
+        <div class="field platform-select">
+          <label>平台</label>
+          <div class="multi-select" id="platformFilter">
+            <button type="button" class="multi-select-trigger" id="platformFilterBtn">
+              <span>全部平台</span>
+              <span class="arrow">&#9662;</span>
+            </button>
+            <div class="multi-select-dropdown hidden" id="platformDropdown">
+              <div class="multi-select-actions">
+                <button type="button" class="secondary" id="selectAllPlatforms">全选</button>
+                <button type="button" class="secondary" id="clearAllPlatforms">清除</button>
+              </div>
+              <div class="multi-select-list" id="platformList"></div>
+            </div>
+          </div>
         </div>
+        <div class="field account-filter">
+          <label>账号</label>
+          <div class="multi-select" id="accountFilter">
+            <button type="button" class="multi-select-trigger" id="accountFilterBtn">
+              <span>全部账号</span>
+              <span class="arrow">&#9662;</span>
+            </button>
+            <div class="multi-select-dropdown hidden" id="accountDropdown">
+              <div class="multi-select-actions">
+                <button type="button" class="secondary" id="selectAllAccounts">全选</button>
+                <button type="button" class="secondary" id="clearAllAccounts">清除</button>
+              </div>
+              <div class="multi-select-list" id="accountList"></div>
+            </div>
+          </div>
+        </div>
+        <label class="check merge-only hidden">
+          <input id="mergeInput" type="checkbox" />
+          <span>合并账号</span>
+        </label>
         <label class="check">
           <input id="includeEmptyInput" type="checkbox" />
           <span>包含未更新账号</span>
@@ -86,7 +116,7 @@
               <th class="sortable" data-sort="platform_account_name">账号昵称</th>
               <th class="sortable" data-sort="platform_account_id">账号ID</th>
               <th class="sortable numeric" data-sort="fans">粉丝</th>
-              <th class="sortable numeric" data-sort="play">播放</th>
+              <th class="sortable numeric" data-sort="play">播放/阅读</th>
               <th class="sortable numeric" data-sort="exposure">曝光</th>
               <th class="sortable numeric" data-sort="like">点赞</th>
               <th class="sortable numeric" data-sort="comment">评论</th>
