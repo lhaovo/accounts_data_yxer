@@ -20,15 +20,16 @@ import json
 import os
 import sqlite3
 import subprocess
+import urllib.request
 import sys
 import threading
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from time import time as time_now
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 
@@ -49,10 +50,8 @@ REPORT_COLUMNS = [
     "fans",
     "play",
     "read",
-    "exposure",
     "like",
     "comment",
-    "share",
     "collect",
     "publish_count",
 ]
@@ -72,6 +71,56 @@ STANDARD_KEYS = [
     "collect",
     "publish_count",
 ]
+
+
+
+
+
+CN_TZ = timezone(timedelta(hours=8))
+
+
+def ms_day_bounds(date_str: str) -> tuple[int, int]:
+    day = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=CN_TZ)
+    return int(day.timestamp() * 1000), int(day.timestamp() * 1000) + 86_399_999
+
+
+def recent_dates(days: int) -> list[str]:
+    today = datetime.now(CN_TZ).date()
+    return [(today - timedelta(days=i)).isoformat() for i in range(1, days + 1)]
+
+
+# Background fetch state -----------------------------------------------------------------
+
+_FETCH_STATE: dict[str, Any] = {
+    "running": False,
+    "mode": "",
+    "current": 0,
+    "total": 0,
+    "currentDate": "",
+    "error": "",
+    "result": None,
+}
+_FETCH_LOCK = threading.Lock()
+
+
+def _overview_table_ddl() -> str:
+    return """
+CREATE TABLE IF NOT EXISTS daily_account_overviews (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    metric_date           TEXT NOT NULL,
+    platform_name         TEXT NOT NULL,
+    platform_account_name TEXT NOT NULL,
+    platform_account_id   TEXT NOT NULL,
+    login_status          INTEGER,
+    fans                  REAL,
+    play                  REAL,
+    like_count            REAL,
+    comment_count         REAL,
+    collect_count         REAL,
+    publish_count         REAL,
+    collected_at          TEXT NOT NULL,
+    UNIQUE(metric_date, platform_account_id)
+)"""
 
 
 def resolve_db_path() -> Path:
@@ -369,6 +418,65 @@ def _merge_accounts(rows):
     return sorted(merged.values(), key=lambda x: (x["platform_name"] or "", x["platform_account_name"] or ""))
 
 
+OVERVIEW_COLUMNS_MAP = {
+    "fans": "fans",
+    "play": "play",
+    "like_count": "like",
+    "comment_count": "comment",
+    "collect_count": "collect",
+    "publish_count": "publish_count",
+}
+
+
+def query_overview_rows(
+    conn: sqlite3.Connection,
+    start: str,
+    end: str,
+    platforms: list[str] | None,
+    account_ids: list[str] | None,
+) -> list[dict[str, Any]]:
+    params: list[Any] = [start, end]
+    filters = ["metric_date BETWEEN ? AND ?"]
+    if platforms:
+        placeholders = ",".join("?" for _ in platforms)
+        filters.append(f"platform_name IN ({placeholders})")
+        params.extend(platforms)
+    if account_ids:
+        placeholders = ",".join("?" for _ in account_ids)
+        filters.append(f"platform_account_id IN ({placeholders})")
+        params.extend(account_ids)
+    where = " AND ".join(filters)
+    rows = conn.execute(
+        f"""
+        SELECT metric_date, platform_name, platform_account_name,
+               platform_account_id, login_status,
+               fans, play, like_count, comment_count, collect_count, publish_count
+        FROM daily_account_overviews
+        WHERE {where}
+        ORDER BY metric_date, platform_name, platform_account_name, platform_account_id
+        """,
+        params,
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        result.append({
+            "metric_date": row["metric_date"],
+            "platform_name": row["platform_name"],
+            "platform_account_name": row["platform_account_name"],
+            "platform_account_id": row["platform_account_id"],
+            "login_status": row["login_status"],
+            "fans": row["fans"],
+            "play": row["play"],
+            "exposure": None,
+            "like": row["like_count"],
+            "comment": row["comment_count"],
+            "share": None,
+            "collect": row["collect_count"],
+            "publish_count": row["publish_count"],
+        })
+    return result
+
+
 def display_rows(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
     result = []
     for row in rows:
@@ -412,6 +520,9 @@ def status_payload() -> dict[str, Any]:
             )
         ]
         payload["metricCount"] = conn.execute("SELECT count(*) FROM daily_account_metrics").fetchone()[0]
+        payload["overviewRowCount"] = conn.execute("SELECT count(*) FROM daily_account_overviews").fetchone()[0]
+        overview_dates = conn.execute("SELECT min(metric_date) AS minDate, max(metric_date) AS maxDate FROM daily_account_overviews").fetchone()
+        payload["overviewDateRange"] = dict(overview_dates) if overview_dates else None
     return payload
 
 
@@ -554,6 +665,94 @@ def schedule_payload() -> dict[str, Any]:
     return get_scheduler().status()
 
 
+
+def _run_fetch(mode: str, api_key: str, db_path: Path) -> None:
+    from datetime import datetime as dt
+    global _FETCH_STATE
+    with _FETCH_LOCK:
+        if _FETCH_STATE["running"]:
+            return
+        dates = recent_dates(3) if mode == "recent" else recent_dates(30)
+        _FETCH_STATE["running"] = True
+        _FETCH_STATE["mode"] = mode
+        _FETCH_STATE["current"] = 0
+        _FETCH_STATE["total"] = len(dates)
+        _FETCH_STATE["currentDate"] = ""
+        _FETCH_STATE["error"] = ""
+        _FETCH_STATE["result"] = None
+    total_accounts = 0
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(_overview_table_ddl())
+        conn.commit()
+        for date_str in dates:
+            with _FETCH_LOCK:
+                _FETCH_STATE["currentDate"] = date_str
+            start_ms, end_ms = ms_day_bounds(date_str)
+            url = (
+                "https://www.yixiaoer.cn/api/overview/incremental"
+                f"?startTime={start_ms}&endTime={end_ms}"
+            )
+            req = urllib.request.Request(url, headers={"Authorization": api_key})
+            try:
+                resp = urllib.request.urlopen(req, timeout=30)
+                data = json.loads(resp.read())
+            except Exception as exc:
+                with _FETCH_LOCK:
+                    _FETCH_STATE["error"] = f"{date_str}: {exc}"
+                    _FETCH_STATE["current"] += 1
+                continue
+            payload = data.get("data") if isinstance(data, dict) else None
+            if not payload:
+                with _FETCH_LOCK:
+                    _FETCH_STATE["current"] += 1
+                continue
+            collected_at = dt.now(CN_TZ).isoformat(timespec="seconds")
+            accounts = payload.get("accounts") or []
+            rows = []
+            for a in accounts:
+                rows.append((
+                    date_str,
+                    a.get("platformName") or "",
+                    a.get("platformAccountName") or "",
+                    a.get("platformAccountId") or "",
+                    a.get("status"),
+                    a.get("fansTotal"),
+                    a.get("playTotal"),
+                    a.get("likesTotal"),
+                    a.get("commentsTotal"),
+                    a.get("favoritesTotal"),
+                    a.get("publishTotal"),
+                    collected_at,
+                ))
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO daily_account_overviews (
+                    metric_date, platform_name, platform_account_name,
+                    platform_account_id, login_status,
+                    fans, play, like_count, comment_count,
+                    collect_count, publish_count, collected_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conn.commit()
+            total_accounts += len(rows)
+            with _FETCH_LOCK:
+                _FETCH_STATE["current"] += 1
+    except Exception as exc:
+        with _FETCH_LOCK:
+            _FETCH_STATE["error"] = str(exc)
+    finally:
+        conn.close()
+        with _FETCH_LOCK:
+            _FETCH_STATE["running"] = False
+            _FETCH_STATE["result"] = {
+                "daysFetched": _FETCH_STATE["current"],
+                "accountsWritten": total_accounts,
+            }
+
+
 class AppHandler(BaseHTTPRequestHandler):
     server_version = "YiXiaoErAccountService/1.0"
 
@@ -590,10 +789,16 @@ class AppHandler(BaseHTTPRequestHandler):
                 self.serve_static(parsed.path.removeprefix("/static/"))
             elif parsed.path == "/api/status":
                 self.send_json(status_payload())
+            elif parsed.path == "/api/merge-accounts":
+                self.handle_merge_accounts()
             elif parsed.path == "/api/schedule":
                 self.handle_schedule()
+            elif parsed.path == "/api/account-detail":
+                self.handle_account_detail()
             elif parsed.path == "/api/settings":
                 self.send_json(settings_payload())
+            elif parsed.path == "/api/fetch-status":
+                self.handle_fetch_status()
             elif parsed.path == "/api/metrics":
                 self.handle_metrics(parsed.query)
             elif parsed.path == "/api/export.csv":
@@ -608,6 +813,12 @@ class AppHandler(BaseHTTPRequestHandler):
             parsed = urlparse(self.path)
             if parsed.path == "/api/refresh":
                 self.handle_refresh()
+            elif parsed.path == "/api/fetch":
+                self.handle_fetch()
+            elif parsed.path == "/api/refresh-accounts":
+                self.handle_refresh_accounts()
+            elif parsed.path == "/api/merge-accounts":
+                self.handle_merge_accounts()
             elif parsed.path == "/api/schedule":
                 self.handle_schedule()
             elif parsed.path == "/api/settings":
@@ -659,9 +870,38 @@ class AppHandler(BaseHTTPRequestHandler):
     def handle_metrics(self, query: str) -> None:
         rows = self.query_rows_from_params(query)
         params = parse_qs(query)
+        date_value = (params.get("date") or [""])[0].strip()
+        start_value = (params.get("start") or [""])[0].strip()
+        end_value = (params.get("end") or [""])[0].strip()
+        if date_value:
+            start = end = parse_date(date_value)
+        else:
+            start = parse_date(start_value)
+            end = parse_date(end_value)
+        platform_raw = (params.get("platforms") or [""])[0].strip()
+        platforms = [p.strip() for p in platform_raw.split(",") if p.strip()] if platform_raw else None
+        account_id_raw = (params.get("accountIds") or [""])[0].strip()
+        account_ids = [a.strip() for a in account_id_raw.split(",") if a.strip()] if account_id_raw else None
+        try:
+            with connect_db() as conn:
+                overview_rows = query_overview_rows(conn, start, end, platforms, account_ids)
+        except Exception:
+            overview_rows = []
         if (params.get("merge") or ["0"])[0] in ("1", "true", "yes"):
             rows = _merge_accounts(rows)
-        self.send_json({"rows": display_rows(rows), "rawRows": rows, "count": len(rows), "columns": REPORT_COLUMNS})
+        # Combine old and new: overview rows have priority (newer data source)
+        seen = set()
+        combined = []
+        for r in overview_rows:
+            key = (r["metric_date"], r["platform_account_id"])
+            seen.add(key)
+            combined.append(r)
+        for r in rows:
+            key = (r["metric_date"], r["platform_account_id"])
+            if key not in seen:
+                combined.append(r)
+        combined.sort(key=lambda x: (x["metric_date"], x["platform_name"] or "", x["platform_account_name"] or "", x["platform_account_id"] or ""))
+        self.send_json({"rows": display_rows(combined), "rawRows": combined, "count": len(combined), "columns": REPORT_COLUMNS})
 
     def handle_csv(self, query: str) -> None:
         rows = display_rows(self.query_rows_from_params(query))
@@ -676,6 +916,130 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+
+    def handle_merge_accounts(self) -> None:
+        body = self.read_json_body()
+        from_id = str(body.get("fromId") or "").strip()
+        to_id = str(body.get("toId") or "").strip()
+        to_name = str(body.get("toName") or "").strip()
+        if not from_id or not to_id:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "missing fromId or toId")
+            return
+        if from_id == to_id:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "fromId and toId must be different")
+            return
+        with connect_db() as conn:
+            # Delete target rows for overlapping dates to avoid UNIQUE conflict
+            conn.execute(
+                "DELETE FROM daily_account_overviews WHERE platform_account_id = ? AND metric_date IN (SELECT metric_date FROM daily_account_overviews WHERE platform_account_id = ?)",
+                (to_id, from_id),
+            )
+            conn.execute(
+                "DELETE FROM daily_account_metrics WHERE platform_account_id = ? AND metric_date IN (SELECT metric_date FROM daily_account_metrics WHERE platform_account_id = ?)",
+                (to_id, from_id),
+            )
+            # Migrate old rows to new ID
+            over_updated = conn.execute(
+                "UPDATE daily_account_overviews SET platform_account_id = ?, platform_account_name = ? WHERE platform_account_id = ?",
+                (to_id, to_name, from_id),
+            ).rowcount
+            conn.execute(
+                "UPDATE daily_account_metrics SET platform_account_id = ?, platform_account_name = ? WHERE platform_account_id = ?",
+                (to_id, to_name, from_id),
+            )
+            # accounts: delete old row if target already exists, then update
+            conn.execute("DELETE FROM accounts WHERE platform_account_id = ?", (to_id,))
+            conn.execute(
+                "UPDATE accounts SET platform_account_id = ?, platform_account_name = ? WHERE platform_account_id = ?",
+                (to_id, to_name, from_id),
+            )
+            conn.commit()
+        self.send_json({"ok": True, "overviewRowsUpdated": over_updated})
+
+    def handle_fetch(self) -> None:
+        body = self.read_json_body()
+        mode = body.get("mode") or "recent"
+        if mode not in ("full", "recent"):
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "mode must be full or recent")
+            return
+        api_key = stored_api_key()
+        if not api_key:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "missing backend apiKey")
+            return
+        with _FETCH_LOCK:
+            if _FETCH_STATE["running"]:
+                self.send_json({"ok": False, "message": "fetch already running", "status": dict(_FETCH_STATE)})
+                return
+        db_path = resolve_db_path()
+        t = threading.Thread(target=_run_fetch, args=(mode, api_key, db_path), daemon=True)
+        t.start()
+        with _FETCH_LOCK:
+            self.send_json({"ok": True, "message": "fetch started", "status": dict(_FETCH_STATE)})
+
+    def handle_refresh_accounts(self) -> None:
+        body = self.read_json_body()
+        account_ids = body.get("accountIds")
+        api_key = stored_api_key()
+        if not api_key:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "missing backend apiKey")
+            return
+        with connect_db() as conn:
+            if account_ids and isinstance(account_ids, list):
+                placeholders = ",".join("?" for _ in account_ids)
+                rows = conn.execute(
+                    f"SELECT platform_account_id FROM accounts WHERE platform_account_id IN ({placeholders})",
+                    account_ids,
+                ).fetchall()
+            else:
+                rows = conn.execute("SELECT platform_account_id FROM accounts").fetchall()
+        triggered = 0
+        skipped = 0
+        errors = 0
+        for row in rows:
+            pid = row["platform_account_id"]
+            url = f"https://www.yixiaoer.cn/api/platform-accounts/{pid}/overview"
+            req = urllib.request.Request(url, headers={"Authorization": api_key}, method="PUT")
+            try:
+                urllib.request.urlopen(req, timeout=15)
+                triggered += 1
+            except urllib.error.HTTPError as e:
+                if e.code == 403:
+                    skipped += 1
+                else:
+                    errors += 1
+            except Exception:
+                errors += 1
+        self.send_json({"ok": True, "triggered": triggered, "skipped": skipped, "errors": errors})
+
+    def handle_fetch_status(self) -> None:
+        with _FETCH_LOCK:
+            self.send_json(dict(_FETCH_STATE))
+
+
+    def handle_account_detail(self) -> None:
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        pid = (params.get("platformAccountId") or [""])[0].strip()
+        if not pid:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "missing platformAccountId")
+            return
+        api_key = stored_api_key()
+        if not api_key:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "missing backend apiKey")
+            return
+        url = f"https://www.yixiaoer.cn/api/platform-accounts/{pid}"
+        req = urllib.request.Request(url, headers={"Authorization": api_key})
+        try:
+            resp = urllib.request.urlopen(req, timeout=15)
+            data = json.loads(resp.read())
+            self.send_json(data.get("data") or {})
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            self.send_error_json(e.code, body[:200])
+        except Exception as exc:
+            self.send_error_json(HTTPStatus.BAD_GATEWAY, str(exc))
 
     def handle_settings(self) -> None:
         body = self.read_json_body()

@@ -9,15 +9,13 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
-const numericColumns = new Set(["fans", "play", "exposure", "like", "comment", "share", "collect", "publish_count"]);
+const numericColumns = new Set(["fans", "play", "like", "comment", "collect", "publish_count"]);
 
 const totalTargets = {
   fans: "totalFans",
   play: "totalPlay",
-  exposure: "totalExposure",
   like: "totalLike",
   comment: "totalComment",
-  share: "totalShare",
   collect: "totalCollect",
   publish_count: "totalPublish",
 };
@@ -129,6 +127,11 @@ async function loadStatus() {
     : `未找到数据库：${data.dbPath}`;
   $("accountCount").textContent = data.accountCount ?? "-";
   $("metricCount").textContent = data.metricCount ?? "-";
+  const ovMin = data.overviewDateRange?.minDate || "";
+  const ovMax = data.overviewDateRange?.maxDate || "";
+  if (ovMin && ovMax) {
+    $("dateRange").textContent = ovMin + " 至 " + ovMax + " (新)";
+  }
   const minDate = data.dateRange?.minDate || "";
   const maxDate = data.dateRange?.maxDate || "";
   $("dateRange").textContent = minDate && maxDate ? `${minDate} 至 ${maxDate}` : "-";
@@ -164,11 +167,22 @@ function renderRows(rows) {
   updateSortIndicators();
   updateTotals(rows);
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="13" class="empty">暂无数据</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" class="empty">暂无数据</td></tr>';
     return;
   }
   for (const row of sortedRows(rows)) {
     const tr = document.createElement("tr");
+
+    // Checkbox cell
+    const tdCheck = document.createElement("td");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.dataset.accountId = row.platform_account_id;
+    cb.dataset.platformName = row.platform_name;
+    cb.addEventListener("change", updateMergeButton);
+    tdCheck.appendChild(cb);
+    tr.appendChild(tdCheck);
+
     const cells = [
       row.metric_date,
       row.platform_name,
@@ -176,17 +190,15 @@ function renderRows(rows) {
       row.platform_account_id,
       row.fans,
       row.play,
-      row.exposure,
       row.like,
       row.comment,
-      row.share,
       row.collect,
       row.publish_count,
       row.login_status,
     ];
     for (const [index, value] of cells.entries()) {
       const td = document.createElement("td");
-      if (index >= 4 && index <= 11) td.classList.add("numeric");
+      if (index >= 4 && index <= 9) td.classList.add("numeric");
       td.textContent = value ?? "-";
       tr.appendChild(td);
     }
@@ -282,32 +294,7 @@ async function saveSchedule() {
   await loadScheduleState();
 }
 
-function openRefresh(mode) {
-  state.pendingRefreshMode = mode;
-  $("refreshOutput").textContent = mode === "full" ? "准备全量更新。" : "准备更新最近一天。";
-  $("refreshDialog").showModal();
-}
 
-async function runRefresh() {
-  const settings = await getJson("/api/settings");
-  if (!settings.hasApiKey) {
-    $("refreshOutput").textContent = "请先点击右上角设置按钮，填写并保存蚂小二 API Key。";
-    return;
-  }
-  $("refreshOutput").textContent = "正在更新...";
-  try {
-    const res = await fetch("/api/refresh", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: state.pendingRefreshMode }),
-    });
-    const data = await res.json();
-    $("refreshOutput").textContent = JSON.stringify(data, null, 2);
-    if (data.ok) await loadStatus();
-  } catch (err) {
-    $("refreshOutput").textContent = "刷新失败: " + err.message;
-  }
-}
 function bindEvents() {
   $("singleMode").addEventListener("click", () => setMode("single"));
   $("rangeMode").addEventListener("click", () => setMode("range"));
@@ -320,12 +307,9 @@ function bindEvents() {
   $("saveSettings").addEventListener("click", () => saveSettings().catch((err) => ($("settingsMessage").textContent = String(err))));
   $("clearSettings").addEventListener("click", () => clearSettings().catch((err) => ($("settingsMessage").textContent = String(err))));
   $("saveSchedule").addEventListener("click", () => saveSchedule().catch((err) => ($("scheduleMessage").textContent = String(err))));
-  $("refreshLatest").addEventListener("click", () => openRefresh("latest"));
-  $("refreshFull").addEventListener("click", () => openRefresh("full"));
-  $("runRefresh").addEventListener("click", () => runRefresh().catch((err) => ($("refreshOutput").textContent = String(err))));
-  $("refreshDialog").addEventListener("close", () => {
-    if ($("refreshOutput").textContent.startsWith("准备")) return;
-  });
+  $("refreshAccounts").addEventListener("click", () => refreshAccounts().catch((err) => alert(err.message)));
+  $("fetchRecent").addEventListener("click", () => startFetch("recent"));
+  $("fetchFull").addEventListener("click", () => startFetch("full"));
   // Platform filter toggle
   $("platformFilterBtn").addEventListener("click", (e) => {
     e.stopPropagation();
@@ -364,7 +348,6 @@ function bindEvents() {
     const btn = $("accountFilterBtn").querySelector("span");
     btn.textContent = checked.length ? "已选 " + checked.length + " 个" : "全部账号";
   });
-  $("refreshOutput").addEventListener("dblclick", () => runRefresh().catch((err) => ($("refreshOutput").textContent = String(err))));
   document.querySelectorAll("th.sortable").forEach((th) => {
     th.addEventListener("click", () => {
       const key = th.dataset.sort;
@@ -387,4 +370,130 @@ async function boot() {
 
 boot().catch((err) => {
   $("statusText").textContent = err.message;
+});
+
+function updateMergeButton() {
+  const checked = [...document.querySelectorAll("#rowsBody input[type=checkbox]:checked")];
+  const ids = [...new Set(checked.map(cb => cb.dataset.accountId))];
+  const btn = $("mergeBtn");
+  if (ids.length === 2) {
+    btn.classList.remove("hidden");
+  } else {
+    btn.classList.add("hidden");
+  }
+}
+
+$("selectAllCheckbox").addEventListener("change", function () {
+  const checked = this.checked;
+  document.querySelectorAll("#rowsBody input[type=checkbox]").forEach(cb => {
+    cb.checked = checked;
+  });
+  updateMergeButton();
+});
+
+$("mergeBtn").addEventListener("click", () => {
+  const checked = [...document.querySelectorAll("#rowsBody input[type=checkbox]:checked")];
+  const unique = [];
+  const seen = new Set();
+  for (const cb of checked) {
+    const id = cb.dataset.accountId;
+    if (!seen.has(id)) {
+      seen.add(id);
+      unique.push({ id, platform: cb.dataset.platformName });
+    }
+  }
+  if (unique.length !== 2) return;
+  if (unique[0].platform !== unique[1].platform) {
+    alert("两个账号不在同一平台，无法合并。\n平台1: " + unique[0].platform + "\n平台2: " + unique[1].platform);
+    return;
+  }
+  startMerge(unique[0].id, unique[1].id);
+});
+
+async function startMerge(idA, idB) {
+  const dialog = $("mergeDialog");
+  const content = $("mergeContent");
+  content.innerHTML = "<p>正在查询账号详情...</p>";
+  dialog.showModal();
+
+  let detailA = null, detailB = null;
+  try { detailA = await getJson("/api/account-detail?platformAccountId=" + idA); } catch (e) {}
+  try { detailB = await getJson("/api/account-detail?platformAccountId=" + idB); } catch (e) {}
+
+  const validA = detailA && detailA.platformAccountName;
+  const validB = detailB && detailB.platformAccountName;
+
+  content.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+      <div style="border:1px solid var(--line);border-radius:6px;padding:12px;${!validA ? 'opacity:0.4' : ''}">
+        <div style="color:var(--muted);font-size:11px;margin-bottom:4px">账号 A</div>
+        <div style="font-weight:650">${detailA?.platformAccountName || '不存在'}</div>
+        <div style="font-size:12px;color:var(--muted)">${detailA?.platformName || '-'}</div>
+        <div style="font-size:11px;word-break:break-all;color:var(--muted);margin-top:4px">${idA}</div>
+        ${!validA ? '<div style="color:#dc2626;font-size:12px;margin-top:4px">⚠ 该账号已失效</div>' : ''}
+      </div>
+      <div style="border:1px solid var(--line);border-radius:6px;padding:12px;${!validB ? 'opacity:0.4' : ''}">
+        <div style="color:var(--muted);font-size:11px;margin-bottom:4px">账号 B</div>
+        <div style="font-weight:650">${detailB?.platformAccountName || '不存在'}</div>
+        <div style="font-size:12px;color:var(--muted)">${detailB?.platformName || '-'}</div>
+        <div style="font-size:11px;word-break:break-all;color:var(--muted);margin-top:4px">${idB}</div>
+        ${!validB ? '<div style="color:#dc2626;font-size:12px;margin-top:4px">⚠ 该账号已失效</div>' : ''}
+      </div>
+    </div>
+    <div style="margin-bottom:10px">
+      <label style="font-size:13px;font-weight:500">将数据合并到：</label>
+      <select id="mergeTarget" style="width:100%;margin-top:4px">
+        ${validB ? '<option value="' + idB + '|' + (detailB.platformAccountName || '') + '">账号 B: ' + (detailB.platformAccountName || '') + ' (' + idB + ')</option>' : ''}
+        ${validA ? '<option value="' + idA + '|' + (detailA.platformAccountName || '') + '">账号 A: ' + (detailA.platformAccountName || '') + ' (' + idA + ')</option>' : ''}
+      </select>
+    </div>
+    <div style="margin-bottom:10px">
+      <label style="font-size:13px;font-weight:500">目标账号名称：</label>
+      <input id="mergeNewName" type="text" style="width:100%;margin-top:4px" placeholder="输入新的账号名称" />
+    </div>
+  `;
+
+  if (!validA && !validB) {
+    content.innerHTML += '<p style="color:#dc2626">两个账号均已失效，无法合并。</p>';
+    $("mergeConfirm").disabled = true;
+  } else {
+    $("mergeConfirm").disabled = false;
+  }
+}
+
+$("mergeConfirm").addEventListener("click", async () => {
+  const checked = [...document.querySelectorAll("#rowsBody input[type=checkbox]:checked")];
+  const ids = [...new Set(checked.map(cb => cb.dataset.accountId))];
+  if (ids.length !== 2) return;
+
+  const targetSelect = $("mergeTarget");
+  if (!targetSelect) return;
+  const [toId, defaultName] = targetSelect.value.split("|");
+  const toName = $("mergeNewName").value.trim() || defaultName;
+  const fromId = ids.find(id => id !== toId);
+  if (!fromId) return;
+
+  try {
+    $("mergeConfirm").disabled = true;
+    $("mergeConfirm").textContent = "合并中...";
+    const data = await getJson("/api/merge-accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fromId, toId, toName }),
+    });
+    $("mergeDialog").close();
+    alert("合并完成！更新了 " + data.overviewRowsUpdated + " 条概览数据。");
+    await loadStatus();
+    await queryRows();
+  } catch (err) {
+    alert("合并失败: " + err.message);
+  } finally {
+    $("mergeConfirm").disabled = false;
+    $("mergeConfirm").textContent = "确认合并";
+  }
+});
+
+$("mergeDialog").addEventListener("close", () => {
+  $("mergeConfirm").disabled = false;
+  $("mergeConfirm").textContent = "确认合并";
 });
