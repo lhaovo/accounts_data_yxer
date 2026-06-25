@@ -344,8 +344,7 @@ tbody tr:hover {
 }
 
 th.numeric,
-td.numeric,
-tfoot td:nth-child(n + 5):nth-child(-n + 12) {
+td.numeric {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -599,4 +598,23 @@ pre {
   .button-row button {
     flex: 1;
   }
+}
+
+.fetch-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 12px;
+  color: var(--accent-dark);
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--accent-light);
+  border-radius: 6px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }

@@ -16,8 +16,10 @@
         <button id="settingsButton" type="button" class="icon-button" title="设置" aria-label="设置">
           <span aria-hidden="true">⚙</span>
         </button>
-        <button id="refreshLatest" type="button">更新最近一天</button>
-        <button id="refreshFull" type="button" class="secondary">全量更新</button>
+        <button id="refreshAccounts" type="button" class="secondary">刷新账号</button>
+        <button id="fetchRecent" type="button">三天数据</button>
+        <button id="fetchFull" type="button">全量数据</button>
+        <span id="fetchProgress" class="fetch-progress hidden"></span>
       </div>
     </header>
 
@@ -85,6 +87,7 @@
         <div class="button-row">
           <button id="queryButton" type="button">查询</button>
           <button id="csvButton" type="button" class="secondary">下载 CSV</button>
+          <button id="mergeBtn" type="button" class="secondary hidden">合并账号</button>
         </div>
       </section>
 
@@ -111,38 +114,36 @@
         <table>
           <thead>
             <tr>
+              <th style="width:34px"><input type="checkbox" id="selectAllCheckbox" title="全选"></th>
               <th class="sortable" data-sort="metric_date">日期</th>
               <th class="sortable" data-sort="platform_name">平台</th>
               <th class="sortable" data-sort="platform_account_name">账号昵称</th>
               <th class="sortable" data-sort="platform_account_id">账号ID</th>
               <th class="sortable numeric" data-sort="fans">粉丝</th>
               <th class="sortable numeric" data-sort="play">播放/阅读</th>
-              <th class="sortable numeric" data-sort="exposure">曝光</th>
               <th class="sortable numeric" data-sort="like">点赞</th>
               <th class="sortable numeric" data-sort="comment">评论</th>
-              <th class="sortable numeric" data-sort="share">分享</th>
               <th class="sortable numeric" data-sort="collect">收藏</th>
               <th class="sortable numeric" data-sort="publish_count">发布数</th>
               <th class="sortable" data-sort="login_status">登录状态</th>
             </tr>
           </thead>
           <tbody id="rowsBody">
-            <tr><td colspan="13" class="empty">暂无数据</td></tr>
+            <tr><td colspan="12" class="empty">暂无数据</td></tr>
           </tbody>
           <tfoot>
             <tr id="totalRow">
+              <td></td>
               <td>总计</td>
               <td>-</td>
               <td id="totalCount">0 行</td>
               <td>-</td>
-              <td id="totalFans">-</td>
-              <td id="totalPlay">-</td>
-              <td id="totalExposure">-</td>
-              <td id="totalLike">-</td>
-              <td id="totalComment">-</td>
-              <td id="totalShare">-</td>
-              <td id="totalCollect">-</td>
-              <td id="totalPublish">-</td>
+              <td id="totalFans" class="numeric">-</td>
+              <td id="totalPlay" class="numeric">-</td>
+              <td id="totalLike" class="numeric">-</td>
+              <td id="totalComment" class="numeric">-</td>
+              <td id="totalCollect" class="numeric">-</td>
+              <td id="totalPublish" class="numeric">-</td>
               <td>-</td>
             </tr>
           </tfoot>
@@ -150,18 +151,6 @@
       </section>
     </main>
 
-    <dialog id="refreshDialog">
-      <form method="dialog">
-        <header>
-          <h2>更新数据</h2>
-          <button value="close" type="submit" class="icon">×</button>
-        </header>
-        <div class="dialog-actions">
-          <button id="runRefresh" type="button">开始更新</button>
-        </div>
-        <pre id="refreshOutput"></pre>
-      </form>
-    </dialog>
 
     <dialog id="settingsDialog">
       <form method="dialog">
@@ -206,11 +195,15 @@
             <div class="field">
               <label for="scheduleMode">模式</label>
               <select id="scheduleMode">
-                <option value="latest" selected>最近一天</option>
+                <option value="latest" selected>三天数据</option>
                 <option value="full">全量</option>
               </select>
             </div>
           </div>
+          <label class="check">
+            <input id="schedulePreRefresh" type="checkbox" />
+            <span>同步前刷新账号</span>
+          </label>
           <div class="dialog-actions">
             <button id="saveSchedule" type="button">保存同步设置</button>
           </div>
@@ -219,6 +212,21 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js"></script>
+    <dialog id="mergeDialog">
+      <header>
+        <h2>合并账号</h2>
+        <button id="mergeClose" type="button" class="icon">&times;</button>
+      </header>
+      <div id="mergeContent" style="padding:0 16px">
+        <p>正在查询账号详情...</p>
+      </div>
+      <div class="dialog-actions" style="padding:12px 16px">
+        <button id="mergeCancel" type="button" class="secondary">取消</button>
+        <button id="mergeConfirm" type="button" disabled>确认合并</button>
+      </div>
+    </dialog>
+
+    <script type="module" src="/static/js/main.js"></script>
+
   </body>
 </html>
