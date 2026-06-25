@@ -344,8 +344,7 @@ tbody tr:hover {
 }
 
 th.numeric,
-td.numeric,
-tfoot td:nth-child(n + 5):nth-child(-n + 10) {
+td.numeric {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }

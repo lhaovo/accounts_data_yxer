@@ -133,16 +133,17 @@
           </tbody>
           <tfoot>
             <tr id="totalRow">
+              <td></td>
               <td>总计</td>
               <td>-</td>
               <td id="totalCount">0 行</td>
               <td>-</td>
-              <td id="totalFans">-</td>
-              <td id="totalPlay">-</td>
-              <td id="totalLike">-</td>
-              <td id="totalComment">-</td>
-              <td id="totalCollect">-</td>
-              <td id="totalPublish">-</td>
+              <td id="totalFans" class="numeric">-</td>
+              <td id="totalPlay" class="numeric">-</td>
+              <td id="totalLike" class="numeric">-</td>
+              <td id="totalComment" class="numeric">-</td>
+              <td id="totalCollect" class="numeric">-</td>
+              <td id="totalPublish" class="numeric">-</td>
               <td>-</td>
             </tr>
           </tfoot>
@@ -194,11 +195,15 @@
             <div class="field">
               <label for="scheduleMode">模式</label>
               <select id="scheduleMode">
-                <option value="latest" selected>最近一天</option>
+                <option value="latest" selected>三天数据</option>
                 <option value="full">全量</option>
               </select>
             </div>
           </div>
+          <label class="check">
+            <input id="schedulePreRefresh" type="checkbox" />
+            <span>同步前刷新账号</span>
+          </label>
           <div class="dialog-actions">
             <button id="saveSchedule" type="button">保存同步设置</button>
           </div>
@@ -207,23 +212,21 @@
       </form>
     </dialog>
 
-    <script src="/static/app.js"></script>
-
     <dialog id="mergeDialog">
-      <form method="dialog">
-        <header>
-          <h2>合并账号</h2>
-          <button value="close" type="submit" class="icon">&times;</button>
-        </header>
-        <div id="mergeContent">
-          <p>正在查询账号详情...</p>
-        </div>
-        <div class="dialog-actions">
-          <button id="mergeCancel" type="button" class="secondary" value="close">取消</button>
-          <button id="mergeConfirm" type="button">确认合并</button>
-        </div>
-      </form>
+      <header>
+        <h2>合并账号</h2>
+        <button id="mergeClose" type="button" class="icon">&times;</button>
+      </header>
+      <div id="mergeContent" style="padding:0 16px">
+        <p>正在查询账号详情...</p>
+      </div>
+      <div class="dialog-actions" style="padding:12px 16px">
+        <button id="mergeCancel" type="button" class="secondary">取消</button>
+        <button id="mergeConfirm" type="button" disabled>确认合并</button>
+      </div>
     </dialog>
+
+    <script type="module" src="/static/js/main.js"></script>
 
   </body>
 </html>

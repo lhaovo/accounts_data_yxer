@@ -19,7 +19,6 @@ import io
 import json
 import os
 import sqlite3
-import subprocess
 import urllib.request
 import sys
 import threading
@@ -28,7 +27,7 @@ from datetime import datetime, timezone, timedelta
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from time import time as time_now
+from time import sleep, time as time_now
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
@@ -477,6 +476,21 @@ def query_overview_rows(
     return result
 
 
+def overlay_rows(base: list[dict[str, Any]], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = {(row["metric_date"], row["platform_account_id"]): dict(row) for row in base}
+    for row in rows:
+        result[(row["metric_date"], row["platform_account_id"])] = dict(row)
+    return sorted(
+        result.values(),
+        key=lambda x: (
+            x["metric_date"],
+            x["platform_name"] or "",
+            x["platform_account_name"] or "",
+            x["platform_account_id"] or "",
+        ),
+    )
+
+
 def display_rows(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
     result = []
     for row in rows:
@@ -494,10 +508,12 @@ def status_payload() -> dict[str, Any]:
     }
     if not db_path.exists():
         return payload
-    with connect_db() as conn:
+    conn = connect_db()
+    try:
+        overview_dates = conn.execute("SELECT min(metric_date) AS minDate, max(metric_date) AS maxDate FROM daily_account_overviews").fetchone()
         payload["dateRange"] = dict(
-            conn.execute("SELECT min(metric_date) AS minDate, max(metric_date) AS maxDate FROM daily_account_metrics").fetchone()
-        )
+            overview_dates
+        ) if overview_dates else {"minDate": None, "maxDate": None}
         payload["platforms"] = [
             dict(row)
             for row in conn.execute(
@@ -519,10 +535,11 @@ def status_payload() -> dict[str, Any]:
                 """
             )
         ]
-        payload["metricCount"] = conn.execute("SELECT count(*) FROM daily_account_metrics").fetchone()[0]
+        payload["metricCount"] = conn.execute("SELECT count(*) FROM daily_account_overviews").fetchone()[0]
         payload["overviewRowCount"] = conn.execute("SELECT count(*) FROM daily_account_overviews").fetchone()[0]
-        overview_dates = conn.execute("SELECT min(metric_date) AS minDate, max(metric_date) AS maxDate FROM daily_account_overviews").fetchone()
         payload["overviewDateRange"] = dict(overview_dates) if overview_dates else None
+    finally:
+        conn.close()
     return payload
 
 
@@ -538,6 +555,7 @@ class Scheduler:
         self._enabled = False
         self._interval_minutes = 360
         self._mode = "latest"
+        self._pre_refresh = False
         self._next_run: float | None = None
         self._last_run: str | None = None
         self._last_result: dict[str, Any] | None = None
@@ -551,6 +569,7 @@ class Scheduler:
             self._enabled = bool(cfg.get("enabled"))
             self._interval_minutes = max(5, int(cfg.get("intervalMinutes") or 360))
             self._mode = cfg.get("mode") if cfg.get("mode") in ("latest", "full") else "latest"
+            self._pre_refresh = bool(cfg.get("preRefresh"))
             self._last_run = cfg.get("lastRun")
             self._next_run = cfg.get("nextRun")
 
@@ -561,6 +580,7 @@ class Scheduler:
                 "enabled": self._enabled,
                 "intervalMinutes": self._interval_minutes,
                 "mode": self._mode,
+                "preRefresh": self._pre_refresh,
                 "lastRun": self._last_run,
                 "nextRun": self._next_run,
             }
@@ -589,7 +609,7 @@ class Scheduler:
             if not self._enabled:
                 return
         try:
-            result = _execute_refresh(self._mode)
+            result = _execute_refresh(self._mode, pre_refresh=self._pre_refresh)
             self._last_run = datetime.now(CN_TZ).isoformat(timespec="seconds")
             self._last_result = result
         except Exception as exc:
@@ -607,11 +627,12 @@ class Scheduler:
                 self._next_run = None
         self._save_config()
 
-    def update(self, enabled: bool, interval_minutes: int, mode: str) -> None:
+    def update(self, enabled: bool, interval_minutes: int, mode: str, pre_refresh: bool = False) -> None:
         with SCHEDULER_LOCK:
             self._enabled = enabled
             self._interval_minutes = max(5, interval_minutes)
             self._mode = mode if mode in ("latest", "full") else "latest"
+            self._pre_refresh = pre_refresh
             self._stop()
             if self._enabled:
                 self._start()
@@ -623,6 +644,7 @@ class Scheduler:
                 "enabled": self._enabled,
                 "intervalMinutes": self._interval_minutes,
                 "mode": self._mode,
+                "preRefresh": self._pre_refresh,
                 "nextRun": self._next_run,
                 "lastRun": self._last_run,
                 "lastResult": self._last_result,
@@ -639,25 +661,58 @@ def get_scheduler() -> Scheduler:
     return _scheduler
 
 
-def _execute_refresh(mode: str) -> dict[str, Any]:
+def _refresh_accounts_for_overview(api_key: str, account_ids: list[str] | None = None) -> dict[str, int | bool]:
+    conn = connect_db()
+    try:
+        if account_ids:
+            placeholders = ",".join("?" for _ in account_ids)
+            rows = conn.execute(
+                f"SELECT platform_account_id FROM accounts WHERE platform_account_id IN ({placeholders})",
+                account_ids,
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT platform_account_id FROM accounts").fetchall()
+    finally:
+        conn.close()
+
+    triggered = 0
+    skipped = 0
+    errors = 0
+    for row in rows:
+        pid = row["platform_account_id"]
+        url = f"https://www.yixiaoer.cn/api/platform-accounts/{pid}/overview"
+        req = urllib.request.Request(url, headers={"Authorization": api_key}, method="PUT")
+        try:
+            urllib.request.urlopen(req, timeout=15)
+            triggered += 1
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                skipped += 1
+            else:
+                errors += 1
+        except Exception:
+            errors += 1
+    return {"ok": True, "triggered": triggered, "skipped": skipped, "errors": errors}
+
+
+def _execute_refresh(mode: str, pre_refresh: bool = False, pre_refresh_wait_seconds: int = 60) -> dict[str, Any]:
     api_key = stored_api_key()
     if not api_key:
         return {"ok": False, "error": "missing apiKey"}
-    script_name = "collect_daily_accounts.py" if mode == "full" else "collect_latest_day.py"
-    script = scripts_dir() / script_name
-    if not script.exists():
-        return {"ok": False, "error": f"script not found: {script}"}
-    env = dict(os.environ)
-    env["YIXIAOER_API_KEY"] = api_key
-    env.setdefault("PYTHONIOENCODING", "utf-8")
-    env.setdefault("PYTHONUTF8", "1")
-    cmd = [sys.executable, str(script), "--db", str(resolve_db_path())]
-    proc = subprocess.run(cmd, cwd=str(scripts_dir()), env=env, capture_output=True, text=True, encoding="utf-8", timeout=600)
+    fetch_mode = "full" if mode == "full" else "recent"
+    pre_refresh_result = None
+    if pre_refresh:
+        pre_refresh_result = _refresh_accounts_for_overview(api_key)
+        sleep(pre_refresh_wait_seconds)
+    _run_fetch(fetch_mode, api_key, resolve_db_path())
+    with _FETCH_LOCK:
+        result = dict(_FETCH_STATE)
     return {
-        "ok": proc.returncode == 0,
-        "returnCode": proc.returncode,
-        "stdout": proc.stdout,
-        "stderr": proc.stderr.replace(api_key, "***") if api_key else proc.stderr,
+        "ok": not result.get("error"),
+        "mode": fetch_mode,
+        "preRefresh": pre_refresh_result,
+        "result": result.get("result"),
+        "error": result.get("error"),
     }
 
 
@@ -863,45 +918,23 @@ class AppHandler(BaseHTTPRequestHandler):
         account_id_raw = (params.get("accountIds") or [""])[0].strip()
         account_ids = [a.strip() for a in account_id_raw.split(",") if a.strip()] if account_id_raw else None
         include_empty = (params.get("includeEmpty") or ["0"])[0] in ("1", "true", "yes")
-        with connect_db() as conn:
-            base = empty_rows(conn, start, end, platforms, account_ids) if include_empty else None
-            return summarize(query_metric_rows(conn, start, end, platforms, account_ids), base)
+        merge = (params.get("merge") or ["0"])[0] in ("1", "true", "yes")
+
+        conn = connect_db()
+        try:
+            overview_rows = query_overview_rows(conn, start, end, platforms, account_ids)
+            if include_empty:
+                overview_rows = overlay_rows(empty_rows(conn, start, end, platforms, account_ids), overview_rows)
+        finally:
+            conn.close()
+
+        if merge:
+            return _merge_accounts(overview_rows)
+        return overview_rows
 
     def handle_metrics(self, query: str) -> None:
         rows = self.query_rows_from_params(query)
-        params = parse_qs(query)
-        date_value = (params.get("date") or [""])[0].strip()
-        start_value = (params.get("start") or [""])[0].strip()
-        end_value = (params.get("end") or [""])[0].strip()
-        if date_value:
-            start = end = parse_date(date_value)
-        else:
-            start = parse_date(start_value)
-            end = parse_date(end_value)
-        platform_raw = (params.get("platforms") or [""])[0].strip()
-        platforms = [p.strip() for p in platform_raw.split(",") if p.strip()] if platform_raw else None
-        account_id_raw = (params.get("accountIds") or [""])[0].strip()
-        account_ids = [a.strip() for a in account_id_raw.split(",") if a.strip()] if account_id_raw else None
-        try:
-            with connect_db() as conn:
-                overview_rows = query_overview_rows(conn, start, end, platforms, account_ids)
-        except Exception:
-            overview_rows = []
-        if (params.get("merge") or ["0"])[0] in ("1", "true", "yes"):
-            rows = _merge_accounts(rows)
-        # Combine old and new: overview rows have priority (newer data source)
-        seen = set()
-        combined = []
-        for r in overview_rows:
-            key = (r["metric_date"], r["platform_account_id"])
-            seen.add(key)
-            combined.append(r)
-        for r in rows:
-            key = (r["metric_date"], r["platform_account_id"])
-            if key not in seen:
-                combined.append(r)
-        combined.sort(key=lambda x: (x["metric_date"], x["platform_name"] or "", x["platform_account_name"] or "", x["platform_account_id"] or ""))
-        self.send_json({"rows": display_rows(combined), "rawRows": combined, "count": len(combined), "columns": REPORT_COLUMNS})
+        self.send_json({"rows": display_rows(rows), "rawRows": rows, "count": len(rows), "columns": REPORT_COLUMNS})
 
     def handle_csv(self, query: str) -> None:
         rows = display_rows(self.query_rows_from_params(query))
@@ -930,25 +963,17 @@ class AppHandler(BaseHTTPRequestHandler):
         if from_id == to_id:
             self.send_error_json(HTTPStatus.BAD_REQUEST, "fromId and toId must be different")
             return
-        with connect_db() as conn:
+        conn = connect_db()
+        try:
             # Delete target rows for overlapping dates to avoid UNIQUE conflict
             conn.execute(
                 "DELETE FROM daily_account_overviews WHERE platform_account_id = ? AND metric_date IN (SELECT metric_date FROM daily_account_overviews WHERE platform_account_id = ?)",
                 (to_id, from_id),
             )
-            conn.execute(
-                "DELETE FROM daily_account_metrics WHERE platform_account_id = ? AND metric_date IN (SELECT metric_date FROM daily_account_metrics WHERE platform_account_id = ?)",
-                (to_id, from_id),
-            )
-            # Migrate old rows to new ID
             over_updated = conn.execute(
                 "UPDATE daily_account_overviews SET platform_account_id = ?, platform_account_name = ? WHERE platform_account_id = ?",
                 (to_id, to_name, from_id),
             ).rowcount
-            conn.execute(
-                "UPDATE daily_account_metrics SET platform_account_id = ?, platform_account_name = ? WHERE platform_account_id = ?",
-                (to_id, to_name, from_id),
-            )
             # accounts: delete old row if target already exists, then update
             conn.execute("DELETE FROM accounts WHERE platform_account_id = ?", (to_id,))
             conn.execute(
@@ -956,6 +981,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 (to_id, to_name, from_id),
             )
             conn.commit()
+        finally:
+            conn.close()
         self.send_json({"ok": True, "overviewRowsUpdated": over_updated})
 
     def handle_fetch(self) -> None:
@@ -985,33 +1012,8 @@ class AppHandler(BaseHTTPRequestHandler):
         if not api_key:
             self.send_error_json(HTTPStatus.BAD_REQUEST, "missing backend apiKey")
             return
-        with connect_db() as conn:
-            if account_ids and isinstance(account_ids, list):
-                placeholders = ",".join("?" for _ in account_ids)
-                rows = conn.execute(
-                    f"SELECT platform_account_id FROM accounts WHERE platform_account_id IN ({placeholders})",
-                    account_ids,
-                ).fetchall()
-            else:
-                rows = conn.execute("SELECT platform_account_id FROM accounts").fetchall()
-        triggered = 0
-        skipped = 0
-        errors = 0
-        for row in rows:
-            pid = row["platform_account_id"]
-            url = f"https://www.yixiaoer.cn/api/platform-accounts/{pid}/overview"
-            req = urllib.request.Request(url, headers={"Authorization": api_key}, method="PUT")
-            try:
-                urllib.request.urlopen(req, timeout=15)
-                triggered += 1
-            except urllib.error.HTTPError as e:
-                if e.code == 403:
-                    skipped += 1
-                else:
-                    errors += 1
-            except Exception:
-                errors += 1
-        self.send_json({"ok": True, "triggered": triggered, "skipped": skipped, "errors": errors})
+        selected_ids = account_ids if account_ids and isinstance(account_ids, list) else None
+        self.send_json(_refresh_accounts_for_overview(api_key, selected_ids))
 
     def handle_fetch_status(self) -> None:
         with _FETCH_LOCK:
@@ -1070,37 +1072,16 @@ class AppHandler(BaseHTTPRequestHandler):
         enabled = bool(body.get("enabled"))
         interval = int(body.get("intervalMinutes") or 360)
         mode = str(body.get("mode") or "latest")
-        get_scheduler().update(enabled, interval, mode)
+        pre_refresh = bool(body.get("preRefresh"))
+        get_scheduler().update(enabled, interval, mode, pre_refresh)
         self.send_json(schedule_payload())
 
 
     def handle_refresh(self) -> None:
         body = self.read_json_body()
         mode = body.get("mode") or "latest"
-        api_key = stored_api_key()
-        if not api_key:
-            self.send_error_json(HTTPStatus.BAD_REQUEST, "missing backend apiKey")
-            return
-        script_name = "collect_daily_accounts.py" if mode == "full" else "collect_latest_day.py"
-        script = scripts_dir() / script_name
-        if not script.exists():
-            raise FileNotFoundError(f"collector script not found: {script}")
-        env = dict(os.environ)
-        env["YIXIAOER_API_KEY"] = api_key
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-        env.setdefault("PYTHONUTF8", "1")
-        cmd = [sys.executable, str(script), "--db", str(resolve_db_path())]
-        proc = subprocess.run(cmd, cwd=str(scripts_dir()), env=env, capture_output=True, text=True, encoding="utf-8", timeout=600)
-        self.send_json(
-            {
-                "ok": proc.returncode == 0,
-                "mode": mode,
-                "returnCode": proc.returncode,
-                "stdout": proc.stdout,
-                "stderr": proc.stderr.replace(api_key, "***") if api_key else proc.stderr,
-            },
-            200 if proc.returncode == 0 else 500,
-        )
+        result = _execute_refresh(mode)
+        self.send_json(result, 200 if result.get("ok") else 500)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
