@@ -4,6 +4,9 @@ async function getJson(url, options) {
   if (!res.ok) {
     throw new Error(data.error?.message || `HTTP ${res.status}`);
   }
+  if (data?.ok === false) {
+    throw new Error(data.message || data.error?.message || "请求失败");
+  }
   return data;
 }
 

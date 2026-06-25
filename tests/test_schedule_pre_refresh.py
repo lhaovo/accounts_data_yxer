@@ -5,6 +5,20 @@ import app
 
 
 class SchedulePreRefreshTest(unittest.TestCase):
+    def tearDown(self):
+        with app._FETCH_LOCK:
+            app._FETCH_STATE.update(
+                {
+                    "running": False,
+                    "mode": "",
+                    "current": 0,
+                    "total": 0,
+                    "currentDate": "",
+                    "error": "",
+                    "result": None,
+                }
+            )
+
     def test_execute_refresh_can_refresh_accounts_before_fetching(self):
         calls = []
 
@@ -15,9 +29,10 @@ class SchedulePreRefreshTest(unittest.TestCase):
         def fake_sleep(seconds):
             calls.append(("sleep", seconds))
 
-        def fake_fetch(mode, api_key, db_path):
-            calls.append(("fetch", mode, api_key, str(db_path)))
+        def fake_fetch(mode, api_key, db_path, dates=None, state_started=False):
+            calls.append(("fetch", mode, api_key, str(db_path), len(dates or []), state_started))
             with app._FETCH_LOCK:
+                app._FETCH_STATE["running"] = False
                 app._FETCH_STATE["error"] = ""
                 app._FETCH_STATE["result"] = {"daysFetched": 3, "accountsWritten": 6}
 
@@ -34,10 +49,26 @@ class SchedulePreRefreshTest(unittest.TestCase):
             [
                 ("refresh", "key-1"),
                 ("sleep", 60),
-                ("fetch", "recent", "key-1", "db.sqlite"),
+                ("fetch", "recent", "key-1", "db.sqlite", 3, True),
             ],
         )
         self.assertEqual(result["preRefresh"], {"ok": True, "triggered": 2, "skipped": 0, "errors": 0})
+
+    def test_execute_refresh_does_not_start_when_another_task_is_running(self):
+        calls = []
+
+        with app._FETCH_LOCK:
+            app._FETCH_STATE["running"] = True
+            app._FETCH_STATE["mode"] = "recent"
+
+        with patch.object(app, "stored_api_key", return_value="key-1"), \
+             patch.object(app, "_refresh_accounts_for_overview", side_effect=lambda *_: calls.append("refresh")), \
+             patch.object(app, "_run_fetch", side_effect=lambda *_: calls.append("fetch")):
+            result = app._execute_refresh("latest", pre_refresh=True, pre_refresh_wait_seconds=60)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "已有任务正在运行，请等待完成")
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":
