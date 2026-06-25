@@ -23,7 +23,7 @@ import urllib.request
 import sys
 import threading
 import traceback
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from http import HTTPStatus
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -88,6 +88,19 @@ def recent_dates(days: int) -> list[str]:
     return [(today - timedelta(days=i)).isoformat() for i in range(1, days + 1)]
 
 
+def fetch_dates_for_mode(mode: str, today: date | None = None) -> list[str]:
+    today = today or datetime.now(CN_TZ).date()
+    if mode == "all":
+        start = date(2026, 4, 1)
+        if today < start:
+            return []
+        days = (today - start).days + 1
+        return [(start + timedelta(days=i)).isoformat() for i in range(days)]
+    if mode == "full":
+        return [(today - timedelta(days=i)).isoformat() for i in range(1, 31)]
+    return [(today - timedelta(days=i)).isoformat() for i in range(1, 4)]
+
+
 # Background fetch state -----------------------------------------------------------------
 
 _FETCH_STATE: dict[str, Any] = {
@@ -100,6 +113,21 @@ _FETCH_STATE: dict[str, Any] = {
     "result": None,
 }
 _FETCH_LOCK = threading.Lock()
+EXTERNAL_REQUEST_INTERVAL_SECONDS = 1
+
+
+def start_fetch_state(mode: str, total: int) -> bool:
+    with _FETCH_LOCK:
+        if _FETCH_STATE["running"]:
+            return False
+        _FETCH_STATE["running"] = True
+        _FETCH_STATE["mode"] = mode
+        _FETCH_STATE["current"] = 0
+        _FETCH_STATE["total"] = total
+        _FETCH_STATE["currentDate"] = ""
+        _FETCH_STATE["error"] = ""
+        _FETCH_STATE["result"] = None
+    return True
 
 
 def _overview_table_ddl() -> str:
@@ -120,6 +148,11 @@ CREATE TABLE IF NOT EXISTS daily_account_overviews (
     collected_at          TEXT NOT NULL,
     UNIQUE(metric_date, platform_account_id)
 )"""
+
+
+def throttled_urlopen(request: urllib.request.Request, timeout: int = 30):
+    sleep(EXTERNAL_REQUEST_INTERVAL_SECONDS)
+    return urllib.request.urlopen(request, timeout=timeout)
 
 
 def resolve_db_path() -> Path:
@@ -661,7 +694,7 @@ def get_scheduler() -> Scheduler:
     return _scheduler
 
 
-def _refresh_accounts_for_overview(api_key: str, account_ids: list[str] | None = None) -> dict[str, int | bool]:
+def load_refresh_account_ids(account_ids: list[str] | None = None) -> list[str]:
     conn = connect_db()
     try:
         if account_ids:
@@ -674,24 +707,51 @@ def _refresh_accounts_for_overview(api_key: str, account_ids: list[str] | None =
             rows = conn.execute("SELECT platform_account_id FROM accounts").fetchall()
     finally:
         conn.close()
+    return [row["platform_account_id"] for row in rows]
 
+
+def _refresh_accounts_for_overview(
+    api_key: str,
+    account_ids: list[str] | None = None,
+    track_progress: bool = False,
+    state_started: bool = False,
+) -> dict[str, int | bool]:
+    platform_account_ids = load_refresh_account_ids(account_ids)
     triggered = 0
     skipped = 0
     errors = 0
-    for row in rows:
-        pid = row["platform_account_id"]
-        url = f"https://www.yixiaoer.cn/api/platform-accounts/{pid}/overview"
-        req = urllib.request.Request(url, headers={"Authorization": api_key}, method="PUT")
-        try:
-            urllib.request.urlopen(req, timeout=15)
-            triggered += 1
-        except urllib.error.HTTPError as e:
-            if e.code == 403:
-                skipped += 1
-            else:
+    total = len(platform_account_ids)
+    if track_progress and not state_started and not start_fetch_state("refresh-accounts", total):
+        return {"ok": False, "triggered": 0, "skipped": 0, "errors": 0}
+    try:
+        for pid in platform_account_ids:
+            if track_progress:
+                with _FETCH_LOCK:
+                    _FETCH_STATE["currentDate"] = pid
+            url = f"https://www.yixiaoer.cn/api/platform-accounts/{pid}/overview"
+            req = urllib.request.Request(url, headers={"Authorization": api_key}, method="PUT")
+            try:
+                throttled_urlopen(req, timeout=15)
+                triggered += 1
+            except urllib.error.HTTPError as e:
+                if e.code == 403:
+                    skipped += 1
+                else:
+                    errors += 1
+            except Exception:
                 errors += 1
-        except Exception:
-            errors += 1
+            finally:
+                if track_progress:
+                    with _FETCH_LOCK:
+                        _FETCH_STATE["current"] += 1
+    finally:
+        result = {"ok": True, "triggered": triggered, "skipped": skipped, "errors": errors}
+        if track_progress:
+            with _FETCH_LOCK:
+                _FETCH_STATE["running"] = False
+                _FETCH_STATE["currentDate"] = ""
+                _FETCH_STATE["error"] = ""
+                _FETCH_STATE["result"] = result
     return {"ok": True, "triggered": triggered, "skipped": skipped, "errors": errors}
 
 
@@ -700,44 +760,102 @@ def _execute_refresh(mode: str, pre_refresh: bool = False, pre_refresh_wait_seco
     if not api_key:
         return {"ok": False, "error": "missing apiKey"}
     fetch_mode = "full" if mode == "full" else "recent"
+    dates = fetch_dates_for_mode(fetch_mode)
+    if not start_fetch_state(fetch_mode, len(dates)):
+        return {"ok": False, "mode": fetch_mode, "preRefresh": None, "result": None, "error": "已有任务正在运行，请等待完成"}
     pre_refresh_result = None
-    if pre_refresh:
-        pre_refresh_result = _refresh_accounts_for_overview(api_key)
-        sleep(pre_refresh_wait_seconds)
-    _run_fetch(fetch_mode, api_key, resolve_db_path())
-    with _FETCH_LOCK:
-        result = dict(_FETCH_STATE)
-    return {
-        "ok": not result.get("error"),
-        "mode": fetch_mode,
-        "preRefresh": pre_refresh_result,
-        "result": result.get("result"),
-        "error": result.get("error"),
-    }
+    try:
+        if pre_refresh:
+            pre_refresh_result = _refresh_accounts_for_overview(api_key)
+            sleep(pre_refresh_wait_seconds)
+        _run_fetch(fetch_mode, api_key, resolve_db_path(), dates, True)
+        with _FETCH_LOCK:
+            result = dict(_FETCH_STATE)
+        return {
+            "ok": not result.get("error"),
+            "mode": fetch_mode,
+            "preRefresh": pre_refresh_result,
+            "result": result.get("result"),
+            "error": result.get("error"),
+        }
+    except Exception as exc:
+        with _FETCH_LOCK:
+            _FETCH_STATE["running"] = False
+            _FETCH_STATE["error"] = str(exc)
+            _FETCH_STATE["result"] = None
+        return {"ok": False, "mode": fetch_mode, "preRefresh": pre_refresh_result, "result": None, "error": str(exc)}
 
 
 def schedule_payload() -> dict[str, Any]:
     return get_scheduler().status()
 
 
+def store_overview_payload(conn: sqlite3.Connection, date_str: str, payload: dict[str, Any], collected_at: str) -> int:
+    accounts = payload.get("accounts") or []
+    written = 0
+    for a in accounts:
+        account_id = a.get("platformAccountId") or ""
+        incoming_play = a.get("playTotal")
+        existing = conn.execute(
+            """
+            SELECT play
+            FROM daily_account_overviews
+            WHERE metric_date = ? AND platform_account_id = ?
+            """,
+            (date_str, account_id),
+        ).fetchone()
+        if existing is not None:
+            existing_play = existing["play"] if isinstance(existing, sqlite3.Row) else existing[0]
+            existing_value = float(existing_play or 0)
+            incoming_value = float(incoming_play or 0)
+            if existing_value >= incoming_value:
+                continue
 
-def _run_fetch(mode: str, api_key: str, db_path: Path) -> None:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO daily_account_overviews (
+                metric_date, platform_name, platform_account_name,
+                platform_account_id, login_status,
+                fans, play, like_count, comment_count,
+                collect_count, publish_count, collected_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+            date_str,
+            a.get("platformName") or "",
+            a.get("platformAccountName") or "",
+            account_id,
+            a.get("status"),
+            a.get("fansTotal"),
+            incoming_play,
+            a.get("likesTotal"),
+            a.get("commentsTotal"),
+            a.get("favoritesTotal"),
+            a.get("publishTotal"),
+            collected_at,
+            ),
+        )
+        written += 1
+    return written
+
+
+
+def _run_fetch(
+    mode: str,
+    api_key: str,
+    db_path: Path,
+    dates: list[str] | None = None,
+    state_started: bool = False,
+) -> None:
     from datetime import datetime as dt
-    global _FETCH_STATE
-    with _FETCH_LOCK:
-        if _FETCH_STATE["running"]:
-            return
-        dates = recent_dates(3) if mode == "recent" else recent_dates(30)
-        _FETCH_STATE["running"] = True
-        _FETCH_STATE["mode"] = mode
-        _FETCH_STATE["current"] = 0
-        _FETCH_STATE["total"] = len(dates)
-        _FETCH_STATE["currentDate"] = ""
-        _FETCH_STATE["error"] = ""
-        _FETCH_STATE["result"] = None
+    dates = dates or fetch_dates_for_mode(mode)
+    if not state_started and not start_fetch_state(mode, len(dates)):
+        return
     total_accounts = 0
+    conn = None
     try:
         conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
         conn.execute(_overview_table_ddl())
         conn.commit()
         for date_str in dates:
@@ -750,7 +868,7 @@ def _run_fetch(mode: str, api_key: str, db_path: Path) -> None:
             )
             req = urllib.request.Request(url, headers={"Authorization": api_key})
             try:
-                resp = urllib.request.urlopen(req, timeout=30)
+                resp = throttled_urlopen(req, timeout=30)
                 data = json.loads(resp.read())
             except Exception as exc:
                 with _FETCH_LOCK:
@@ -763,43 +881,17 @@ def _run_fetch(mode: str, api_key: str, db_path: Path) -> None:
                     _FETCH_STATE["current"] += 1
                 continue
             collected_at = dt.now(CN_TZ).isoformat(timespec="seconds")
-            accounts = payload.get("accounts") or []
-            rows = []
-            for a in accounts:
-                rows.append((
-                    date_str,
-                    a.get("platformName") or "",
-                    a.get("platformAccountName") or "",
-                    a.get("platformAccountId") or "",
-                    a.get("status"),
-                    a.get("fansTotal"),
-                    a.get("playTotal"),
-                    a.get("likesTotal"),
-                    a.get("commentsTotal"),
-                    a.get("favoritesTotal"),
-                    a.get("publishTotal"),
-                    collected_at,
-                ))
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO daily_account_overviews (
-                    metric_date, platform_name, platform_account_name,
-                    platform_account_id, login_status,
-                    fans, play, like_count, comment_count,
-                    collect_count, publish_count, collected_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                rows,
-            )
+            rows_written = store_overview_payload(conn, date_str, payload, collected_at)
             conn.commit()
-            total_accounts += len(rows)
+            total_accounts += rows_written
             with _FETCH_LOCK:
                 _FETCH_STATE["current"] += 1
     except Exception as exc:
         with _FETCH_LOCK:
             _FETCH_STATE["error"] = str(exc)
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
         with _FETCH_LOCK:
             _FETCH_STATE["running"] = False
             _FETCH_STATE["result"] = {
@@ -988,19 +1080,24 @@ class AppHandler(BaseHTTPRequestHandler):
     def handle_fetch(self) -> None:
         body = self.read_json_body()
         mode = body.get("mode") or "recent"
-        if mode not in ("full", "recent"):
-            self.send_error_json(HTTPStatus.BAD_REQUEST, "mode must be full or recent")
+        if mode not in ("all", "full", "recent"):
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "mode must be all, full or recent")
             return
         api_key = stored_api_key()
         if not api_key:
             self.send_error_json(HTTPStatus.BAD_REQUEST, "missing backend apiKey")
             return
+        dates = fetch_dates_for_mode(mode)
         with _FETCH_LOCK:
             if _FETCH_STATE["running"]:
-                self.send_json({"ok": False, "message": "fetch already running", "status": dict(_FETCH_STATE)})
+                self.send_error_json(HTTPStatus.CONFLICT, "已有任务正在运行，请等待完成")
                 return
+        if not start_fetch_state(mode, len(dates)):
+            with _FETCH_LOCK:
+                self.send_error_json(HTTPStatus.CONFLICT, "已有任务正在运行，请等待完成")
+            return
         db_path = resolve_db_path()
-        t = threading.Thread(target=_run_fetch, args=(mode, api_key, db_path), daemon=True)
+        t = threading.Thread(target=_run_fetch, args=(mode, api_key, db_path, dates, True), daemon=True)
         t.start()
         with _FETCH_LOCK:
             self.send_json({"ok": True, "message": "fetch started", "status": dict(_FETCH_STATE)})
@@ -1013,7 +1110,23 @@ class AppHandler(BaseHTTPRequestHandler):
             self.send_error_json(HTTPStatus.BAD_REQUEST, "missing backend apiKey")
             return
         selected_ids = account_ids if account_ids and isinstance(account_ids, list) else None
-        self.send_json(_refresh_accounts_for_overview(api_key, selected_ids))
+        platform_account_ids = load_refresh_account_ids(selected_ids)
+        with _FETCH_LOCK:
+            if _FETCH_STATE["running"]:
+                self.send_error_json(HTTPStatus.CONFLICT, "已有任务正在运行，请等待完成")
+                return
+        if not start_fetch_state("refresh-accounts", len(platform_account_ids)):
+            with _FETCH_LOCK:
+                self.send_error_json(HTTPStatus.CONFLICT, "已有任务正在运行，请等待完成")
+            return
+        thread = threading.Thread(
+            target=_refresh_accounts_for_overview,
+            args=(api_key, platform_account_ids, True, True),
+            daemon=True,
+        )
+        thread.start()
+        with _FETCH_LOCK:
+            self.send_json({"ok": True, "message": "refresh started", "status": dict(_FETCH_STATE)})
 
     def handle_fetch_status(self) -> None:
         with _FETCH_LOCK:
@@ -1034,7 +1147,7 @@ class AppHandler(BaseHTTPRequestHandler):
         url = f"https://www.yixiaoer.cn/api/platform-accounts/{pid}"
         req = urllib.request.Request(url, headers={"Authorization": api_key})
         try:
-            resp = urllib.request.urlopen(req, timeout=15)
+            resp = throttled_urlopen(req, timeout=15)
             data = json.loads(resp.read())
             self.send_json(data.get("data") or {})
         except urllib.error.HTTPError as e:

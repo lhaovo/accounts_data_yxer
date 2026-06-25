@@ -13,6 +13,10 @@ import {
 import { loadStatus } from "./status.js";
 import { bindSortHeaders, renderRows } from "./table.js";
 
+function todayText() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 async function queryRows() {
   $("queryButton").disabled = true;
   try {
@@ -47,6 +51,16 @@ function bindEvents() {
   on("refreshAccounts", "click", () => refreshAccounts(reloadPage).catch((err) => alert(err.message)));
   on("fetchRecent", "click", () => startFetch("recent", reloadPage).catch((err) => alert(err.message)));
   on("fetchFull", "click", () => startFetch("full", reloadPage).catch((err) => alert(err.message)));
+  on("openFullUpdateConfirm", "click", () => {
+    $("fullUpdateMessage").textContent = `确认更新 2026-04-01 至 ${todayText()} 的全部数据？已有同日期同账号数据时，会按阅读量保留较大的一条。`;
+    $("fullUpdateDialog").showModal();
+  });
+  on("fullUpdateCancel", "click", () => $("fullUpdateDialog").close());
+  on("fullUpdateClose", "click", () => $("fullUpdateDialog").close());
+  on("fullUpdateConfirm", "click", () => {
+    $("fullUpdateDialog").close();
+    startFetch("all", reloadPage).catch((err) => alert(err.message));
+  });
 }
 
 async function boot() {
