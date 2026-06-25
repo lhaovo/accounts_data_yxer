@@ -90,11 +90,12 @@ def recent_dates(days: int) -> list[str]:
 
 def fetch_dates_for_mode(mode: str, today: date | None = None) -> list[str]:
     today = today or datetime.now(CN_TZ).date()
+    latest_complete_day = today - timedelta(days=1)
     if mode == "all":
         start = date(2026, 4, 1)
-        if today < start:
+        if latest_complete_day < start:
             return []
-        days = (today - start).days + 1
+        days = (latest_complete_day - start).days + 1
         return [(start + timedelta(days=i)).isoformat() for i in range(days)]
     if mode == "full":
         return [(today - timedelta(days=i)).isoformat() for i in range(1, 31)]
